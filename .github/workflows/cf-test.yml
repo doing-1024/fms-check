@@ -1,0 +1,13 @@
+name: cf-test
+on:
+  workflow_dispatch:
+jobs:
+  curl:
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          echo "--- ip ---"; curl -s --max-time 10 https://api.ipify.org; echo
+          echo "--- app-settings/credits ---"
+          curl -s --max-time 20 -A "FMCS-App" https://api.freemcserver.net/v4/app-settings/credits | head -c 300; echo
+          echo "--- panel ---"
+          curl -s --max-time 20 -o /dev/null -w "%{http_code}\n" https://panel.freemcserver.net/
