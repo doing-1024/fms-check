@@ -188,8 +188,9 @@ def main():
     adb("shell", "settings", "put", "global", "window_animation_scale", "0")
     adb("shell", "settings", "put", "global", "transition_animation_scale", "0")
     adb("shell", "settings", "put", "global", "animator_duration_scale", "0")
-    print("[install]", adb("install-multiple", "-r", "-g", "fms.apk",
-                            "config.arm64_v8a.apk", "config.en.apk", "config.mdpi.apk",
+    print("[install]", adb("install-multiple", "-r", "-g", "fms-aligned-debugSigned.apk",
+                            "cfg_arm64-aligned-debugSigned.apk", "config.en-aligned-debugSigned.apk",
+                            "config.mdpi-aligned-debugSigned.apk",
                             timeout=600)[:600])
     adb("shell", "monkey", "-p", PKG, "-c", "android.intent.category.LAUNCHER", "1")
     for i in range(10):
