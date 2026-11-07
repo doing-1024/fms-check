@@ -314,3 +314,12 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+# 结束时把 tinyproxy 日志拷到工作目录
+try:
+    with open("proxy.log", "w") as f:
+        f.write(subprocess.run(["sudo", "cat", "/var/log/tinyproxy/tinyproxy.log"],
+                               capture_output=True, text=True, timeout=30).stdout)
+    print("[proxy] log 已保存")
+except Exception as e:
+    print("[proxy]", e)
