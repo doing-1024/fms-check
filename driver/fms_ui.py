@@ -206,14 +206,31 @@ def do_login(ns):
     return False
 
 
+def net_forensics(tag):
+    """guest 网络取证: DNS 解析结果 + TCP socket 状态 + 连接性"""
+    print(f"[net] === {tag} ===")
+    r = adb("shell", "ping -c 1 -W 3 api.freemcserver.net", timeout=30)
+    print("[net] ping:", r.strip().splitlines()[:2])
+    r = adb("shell", "ss -tn 2>/dev/null || netstat -tn 2>/dev/null", timeout=30)
+    for ln in r.splitlines():
+        if ":443" in ln or ":80 " in ln:
+            print("[net] sock:", ln.strip()[:130])
+    r = adb("shell", "dumpsys connectivity", timeout=60)
+    for ln in r.splitlines():
+        ll = ln.strip()
+        if ll.startswith(("Active default network", "Current Networks", "NetworkCapabilities")) or "VALIDATED" in ll:
+            print("[net] conn:", ll[:130])
+
+
 def flow_full():
     ns = wait_app()
+    # 登录前先看 guest 网络
+    net_forensics("pre_login")
+    logged_in = False
     if find(ns, "welcome back", "username", "sign in"):
         print("[flow] 登录页")
-        # 填 username
         ets = [n for n in ns if "EditText" in n["cls"]]
         input_text(ets[0], USER, "f_user", "Username")
-        # 收键盘后重新 dump, 拿密码框新坐标再 tap
         time.sleep(1)
         dump_ui("pre_pass")
         ns2 = nodes("pre_pass")
@@ -228,25 +245,44 @@ def flow_full():
         btn = find(nodes("login_ready"), "sign in")
         if btn:
             tap(btn)
-        print("[flow] 已提交登录, 等待...")
-    for i in range(10):
-        time.sleep(8)
-        tag = f"home{i:02d}"
-        dump_ui(tag)
-        shot(tag)
-        save_logcat()
-        save_proxy()
-        ns = nodes(tag)
-        if find(ns, "server", "credits", "my servers", "welcome") and not find(ns, "welcome back"):
-            print(f"[flow] 主页就绪 (第{i}轮)")
+        print("[flow] 已提交登录(第1次), 等 90s 轮询主页...")
+        for i in range(11):
+            time.sleep(8)
+            tag = f"home{i:02d}"
+            dump_ui(tag)
+            shot(tag)
+            save_logcat()
+            save_proxy()
+            ns = nodes(tag)
+            if not find(ns, "welcome back") and (find(ns, "server", "credits", "my servers") or find(ns, "hello")):
+                print(f"[flow] 主页就绪 (第{i}轮)")
+                logged_in = True
+                summarize(ns, tag)
+                break
+            if i == 3:
+                net_forensics(f"mid_login_{i}")
+            if i == 5:
+                # 只重试一次 Sign In (保护账号不被限流)
+                print("[flow] 60s 未成功, 补点一次 Sign In (最多2次提交)")
+                b = find(ns, "sign in")
+                if b: tap(b)
+            if i == 8:
+                net_forensics(f"late_login_{i}")
             summarize(ns, tag)
-            break
-        summarize(ns, tag)
-        if find(ns, "welcome back"):
-            print("[flow] 仍在登录页, 再点一次 Sign In")
-            b = find(ns, "sign in")
-            if b: tap(b)
-    # 找 credits 入口
+    else:
+        logged_in = True
+    print("[flow] 登录结果:", "OK" if logged_in else "FAILED (已停止重试, 保护账号)")
+    save_logcat()
+    save_proxy()
+    if not logged_in:
+        dump_ui("login_final")
+        shot("login_final")
+        print("[flow] 登录未成功, 提前结束 (证据已保存)")
+        return
+    # 找 credits 入口 (从最近的 home dump 恢复状态)
+    import glob
+    homes = sorted(glob.glob(f"{OUT}/home*.xml"))
+    ns = nodes(homes[-1]) if homes else []
     for i in range(15):
         tag = f"nav_{i:02d}"
         dump_ui(tag)
