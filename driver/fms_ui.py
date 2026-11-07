@@ -81,13 +81,38 @@ def tap(n):
     adb("shell", "input", "tap", str(x), str(y))
 
 
+KEYMAP = {c: 7 + int(c) for c in "0123456789"}
+KEYMAP.update({chr(ord("a") + i): 29 + i for i in range(26)})
+KEYMAP.update({"@": 77, ".": 56, ",": 55, "-": 69, "_": 73, "/": 76, "!": 71})
+
+
+def type_text(text):
+    """逐字符 keyevent，大小写用 SHIFT，最稳"""
+    for ch in text:
+        if ch.isupper():
+            adb("shell", "input", "keyevent", "60")  # SHIFT down
+            adb("shell", "input", "keyevent", str(KEYMAP[ch.lower()]))
+            adb("shell", "input", "keyevent", "60")  # SHIFT off
+        elif ch in KEYMAP:
+            adb("shell", "input", "keyevent", str(KEYMAP[ch]))
+        else:
+            adb("shell", "input", "text", ch)
+        time.sleep(0.15)
+
+
 def input_text(n, text, tag="in", placeholder=None):
     ph = (placeholder or "").lower()
     for attempt in range(3):
         tap(n)
+        time.sleep(1.5)
+        adb("shell", "input", "keyevent", "111")  # ESC: 确保无残留状态
+        time.sleep(0.5)
+        tap(n)
         time.sleep(1.2)
-        adb("shell", "input", "text", text.replace(" ", "%s"))
-        time.sleep(0.8)
+        type_text(text)
+        time.sleep(1)
+        adb("shell", "input", "keyevent", "4")  # BACK 收起键盘
+        time.sleep(1.2)
         dump_ui(tag)
         for m in nodes(tag):
             if m["box"] == n["box"]:
@@ -160,12 +185,21 @@ def flow_full():
     ns = wait_app()
     if find(ns, "welcome back", "username", "sign in"):
         print("[flow] 登录页")
+        # 填 username
         ets = [n for n in ns if "EditText" in n["cls"]]
         input_text(ets[0], USER, "f_user", "Username")
-        ok = input_text(ets[1], PASS, "f_pass", "Password")
+        # 收键盘后重新 dump, 拿密码框新坐标再 tap
+        time.sleep(1)
+        dump_ui("pre_pass")
+        ns2 = nodes("pre_pass")
+        ets2 = [n for n in ns2 if "EditText" in n["cls"]]
+        ok = False
+        if len(ets2) >= 2:
+            ok = input_text(ets2[1], PASS, "f_pass", "Password")
         print("[flow] 密码填入:", ok)
         time.sleep(0.5)
         dump_ui("login_ready")
+        shot("login_ready")
         btn = find(nodes("login_ready"), "sign in")
         if btn:
             tap(btn)
