@@ -43,7 +43,11 @@ jobs:
 
       - name: Run emulator + flow
         uses: reactivecircus/android-emulator-runner@v2
+        env:
+          FMCS_USER: ${{ secrets.FMCS_USER }}
+          FMCS_PASS: ${{ secrets.FMCS_PASS }}
         with:
+          envs: FMCS_USER,FMCS_PASS
           api-level: 34
           target: google_apis_playstore
           arch: x86_64
