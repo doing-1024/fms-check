@@ -100,7 +100,7 @@ def type_text(text):
         time.sleep(0.15)
 
 
-def input_text(n, text, tag="in", placeholder=None):
+def input_text(n, text, tag="in", placeholder=None, secure=False):
     ph = (placeholder or "").lower()
     for attempt in range(3):
         tap(n)
@@ -118,7 +118,12 @@ def input_text(n, text, tag="in", placeholder=None):
             if m["box"] == n["box"]:
                 cur = (m["text"] or "").strip()
                 cur_l = cur.lower()
-                if cur and cur_l != ph and cur_l.replace("•", "") != "":
+                # 安全输入框: 有内容时系统隐藏原文, dump 里 text 为空串
+                if secure:
+                    if cur_l != ph:
+                        print(f"[input] 已填入 (安全框, 占位符已消失, dump={cur[:12]!r})")
+                        return True
+                elif cur and cur_l != ph and cur_l.replace("•", "") != "":
                     print(f"[input] 已填入 (掩码或原文): {cur[:20]!r}")
                     return True
         print(f"[input] 第 {attempt+1} 次未验证到内容, 重试")
@@ -195,7 +200,7 @@ def flow_full():
         ets2 = [n for n in ns2 if "EditText" in n["cls"]]
         ok = False
         if len(ets2) >= 2:
-            ok = input_text(ets2[1], PASS, "f_pass", "Password")
+            ok = input_text(ets2[1], PASS, "f_pass", "Password", secure=True)
         print("[flow] 密码填入:", ok)
         time.sleep(0.5)
         dump_ui("login_ready")
