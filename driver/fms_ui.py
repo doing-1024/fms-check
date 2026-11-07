@@ -57,10 +57,19 @@ def nodes(tag):
 
 
 def find(ns, *words):
-    """按 text/desc 包含任一关键词找节点"""
+    """按 text/desc 找节点: 先精确, 再前缀, 最后包含"""
+    wl = [w.lower() for w in words]
+    for n in ns:
+        hay = (n["text"] + " " + n["desc"]).strip().lower()
+        if any(hay == w for w in wl):
+            return n
+    for n in ns:
+        hay = (n["text"] + " " + n["desc"]).strip().lower()
+        if any(hay.startswith(w) for w in wl) and not hay.startswith("please"):
+            return n
     for n in ns:
         hay = (n["text"] + " " + n["desc"]).lower()
-        if any(w.lower() in hay for w in words):
+        if any(w in hay for w in wl) and "please" not in hay:
             return n
     return None
 
@@ -72,18 +81,21 @@ def tap(n):
     adb("shell", "input", "tap", str(x), str(y))
 
 
-def input_text(n, text, tag="in"):
+def input_text(n, text, tag="in", placeholder=None):
+    ph = (placeholder or "").lower()
     for attempt in range(3):
         tap(n)
         time.sleep(1.2)
         adb("shell", "input", "text", text.replace(" ", "%s"))
         time.sleep(0.8)
-        adb("shell", "input", "keyevent", "66")  # 确认
-        time.sleep(0.6)
         dump_ui(tag)
         for m in nodes(tag):
-            if m["box"] == n["box"] and m["text"] == text:
-                return True
+            if m["box"] == n["box"]:
+                cur = (m["text"] or "").strip()
+                cur_l = cur.lower()
+                if cur and cur_l != ph and cur_l.replace("•", "") != "":
+                    print(f"[input] 已填入 (掩码或原文): {cur[:20]!r}")
+                    return True
         print(f"[input] 第 {attempt+1} 次未验证到内容, 重试")
     return False
 
@@ -149,8 +161,8 @@ def flow_full():
     if find(ns, "welcome back", "username", "sign in"):
         print("[flow] 登录页")
         ets = [n for n in ns if "EditText" in n["cls"]]
-        input_text(ets[0], USER, "f_user")
-        ok = input_text(ets[1], PASS, "f_pass")
+        input_text(ets[0], USER, "f_user", "Username")
+        ok = input_text(ets[1], PASS, "f_pass", "Password")
         print("[flow] 密码填入:", ok)
         time.sleep(0.5)
         dump_ui("login_ready")
