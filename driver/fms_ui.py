@@ -96,6 +96,18 @@ def summarize(ns, tag):
             print(f"  {n['cls']:<28} t={n['text'][:40]!r} d={n['desc'][:40]!r}")
 
 
+def shot(tag):
+    try:
+        r = subprocess.run(["adb", "exec-out", "screencap", "-p"], capture_output=True, timeout=30)
+        open(f"{OUT}/{tag}.png", "wb").write(r.stdout)
+    except Exception as e:
+        print(f"[shot] {tag} failed: {e}")
+
+
+def app_pid():
+    return adb("shell", "pidof", PKG).strip()
+
+
 def wait_app(t=25):
     time.sleep(t)
     dump_ui("boot")
@@ -162,6 +174,7 @@ def flow_recon(iters=14, gap=6):
         time.sleep(gap)
         tag = f"r{i:02d}"
         dump_ui(tag)
+        shot(tag)
         ns = nodes(tag)
         summarize(ns, tag)
     save_logcat()
@@ -175,8 +188,20 @@ def main():
     adb("shell", "settings", "put", "global", "window_animation_scale", "0")
     adb("shell", "settings", "put", "global", "transition_animation_scale", "0")
     adb("shell", "settings", "put", "global", "animator_duration_scale", "0")
-    print("[install]", adb("install", "-r", "-g", "fms.apk")[:200])
+    print("[install]", adb("install-multiple", "-r", "-g", "fms.apk",
+                            "config.arm64_v8a.apk", "config.en.apk", "config.mdpi.apk",
+                            timeout=240)[:600])
     adb("shell", "monkey", "-p", PKG, "-c", "android.intent.category.LAUNCHER", "1")
+    for i in range(10):
+        time.sleep(3)
+        pid = app_pid()
+        print(f"[pid] {i}: {pid or 'dead'}")
+        if pid:
+            break
+    if not app_pid():
+        print("[!] App 未存活, dump 崩溃日志")
+        save_logcat()
+        sys.exit(1)
     if mode == "full":
         flow_full()
     else:
