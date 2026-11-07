@@ -19,8 +19,28 @@ PASS = os.environ.get("FMCS_PASS", "")
 
 
 def adb(*args, timeout=90):
-    r = subprocess.run(["adb", *args], capture_output=True, text=True, timeout=timeout)
-    return r.stdout
+    try:
+        r = subprocess.run(["adb", *args], capture_output=True, text=True, timeout=timeout)
+        return r.stdout
+    except subprocess.TimeoutExpired:
+        print(f"[adb] TIMEOUT: {' '.join(args[:3])}")
+        return "[TIMEOUT]"
+    except Exception as e:
+        print(f"[adb] ERR: {e}")
+        return "[ERR]"
+
+
+def save_proxy():
+    """保存 tinyproxy 日志(每阶段调用, 防崩溃丢证据)"""
+    try:
+        out = subprocess.run(["sudo", "cat", "/var/log/tinyproxy/tinyproxy.log"],
+                             capture_output=True, text=True, timeout=30).stdout
+        open("proxy.log", "w").write(out)
+        conn = [ln for ln in out.splitlines() if "CONNECT" in ln and "freemcserver" in ln]
+        for ln in conn[-8:]:
+            print("[prx]", ln[:150])
+    except Exception as e:
+        print("[proxy]", e)
 
 
 def dump_ui(tag):
@@ -131,7 +151,7 @@ def input_text(n, text, tag="in", placeholder=None, secure=False):
 
 
 def save_logcat(tag=""):
-    r = adb("logcat", "-d")
+    r = adb("logcat", "-d", timeout=60)
     with open("logcat.txt", "w") as f:
         f.write(r)
     hits = [ln for ln in r.splitlines()
@@ -214,6 +234,8 @@ def flow_full():
         tag = f"home{i:02d}"
         dump_ui(tag)
         shot(tag)
+        save_logcat()
+        save_proxy()
         ns = nodes(tag)
         if find(ns, "server", "credits", "my servers", "welcome") and not find(ns, "welcome back"):
             print(f"[flow] 主页就绪 (第{i}轮)")
@@ -239,12 +261,16 @@ def flow_full():
     time.sleep(10)
     dump_ui("credits_tab")
     shot("credits_tab")
+    save_logcat()
+    save_proxy()
     summarize(nodes("credits_tab"), "credits_tab")
     # 找 claim 按钮
     for i in range(20):
         tag = f"claim_{i:02d}"
         dump_ui(tag)
         shot(tag)
+        save_logcat()
+        save_proxy()
         ns = nodes(tag)
         btn = find(ns, "claim", "watch ad", "earn", "get credit", "integrity")
         if btn:
@@ -314,12 +340,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-# 结束时把 tinyproxy 日志拷到工作目录
-try:
-    with open("proxy.log", "w") as f:
-        f.write(subprocess.run(["sudo", "cat", "/var/log/tinyproxy/tinyproxy.log"],
-                               capture_output=True, text=True, timeout=30).stdout)
-    print("[proxy] log 已保存")
-except Exception as e:
-    print("[proxy]", e)
