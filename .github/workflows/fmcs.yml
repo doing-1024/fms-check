@@ -51,11 +51,7 @@ jobs:
           ram-size: 3072M
           script: |
             mkdir -p ui
-            if [ "${{ inputs.mode }}" = "probe" ]; then
-              python3 driver/probe.py
-            else
-              python3 driver/fms_ui.py "${{ inputs.mode }}"
-            fi
+            if [ "${{ inputs.mode }}" = "probe" ]; then python3 driver/probe.py; else python3 driver/fms_ui.py "${{ inputs.mode }}"; fi
 
       - name: Upload UI dumps
         if: always()
