@@ -28,11 +28,12 @@ jobs:
       - name: Run emulator + flow
         uses: reactivecircus/android-emulator-runner@v2
         with:
-          api-level: 34
+          api-level: 33
           target: google_apis_playstore
-          arch: x86_64
+          arch: arm64_v8a
           profile: pixel_5
           ram-size: 3072M
+          emulator-boot-timeout: 1800
           script: |
             mkdir -p ui
             python3 driver/fms_ui.py "${{ inputs.mode }}"

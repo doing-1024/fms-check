@@ -190,7 +190,7 @@ def main():
     adb("shell", "settings", "put", "global", "animator_duration_scale", "0")
     print("[install]", adb("install-multiple", "-r", "-g", "fms.apk",
                             "config.arm64_v8a.apk", "config.en.apk", "config.mdpi.apk",
-                            timeout=240)[:600])
+                            timeout=600)[:600])
     adb("shell", "monkey", "-p", PKG, "-c", "android.intent.category.LAUNCHER", "1")
     for i in range(10):
         time.sleep(3)
