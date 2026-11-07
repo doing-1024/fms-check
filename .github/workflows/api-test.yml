@@ -1,0 +1,43 @@
+name: api-test
+on:
+  workflow_dispatch:
+jobs:
+  t:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - name: WARP
+        run: |
+          CODENAME=$(lsb_release -cs)
+          curl -fsSL https://pkg.cloudflareclient.com/pubkey.gpg | sudo gpg --yes --dearmor -o /usr/share/keyrings/cloudflare-main.gpg
+          echo "deb [signed-by=/usr/share/keyrings/cloudflare-main.gpg] https://pkg.cloudflareclient.com/ $CODENAME main" | sudo tee /etc/apt/sources.list.d/cloudflare-client.list
+          sudo apt-get update -qq && sudo apt-get install -y -qq cloudflare-warp
+          warp-cli --accept-tos registration new && warp-cli --accept-tos mode warp && warp-cli --accept-tos connect
+          sleep 6
+      - name: api test
+        env:
+          FMCS_USER: ${{ secrets.FMCS_USER }}
+          FMCS_PASS: ${{ secrets.FMCS_PASS }}
+        run: |
+          pip install -q requests xxhash
+          python3 - <<'PY'
+          import time, os, json, sys
+          sys.path.insert(0, 'api')
+          import fms_api
+          c = fms_api.FmsClient('/tmp/config.json' if hasattr(fms_api,'x') else None)
+          # 用独立 config 路径
+          fms_api.CONFIG = '/tmp/fms_config.json'
+          t0 = time.time()
+          try:
+              r = c.login(os.environ['FMCS_USER'], os.environ['FMCS_PASS'])
+              print('LOGIN', round(time.time()-t0,1), 's ->', json.dumps(r, default=str)[:400])
+          except Exception as e:
+              print('LOGIN EXC after', round(time.time()-t0,1), 's:', repr(e)[:300])
+          t0 = time.time()
+          try:
+              s, d = c.me()
+              print('ME', s, round(time.time()-t0,1), 's ->', json.dumps(d, default=str)[:300])
+          except Exception as e:
+              print('ME EXC after', round(time.time()-t0,1), 's:', repr(e)[:300])
+          PY
