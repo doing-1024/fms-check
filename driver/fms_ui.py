@@ -72,11 +72,20 @@ def tap(n):
     adb("shell", "input", "tap", str(x), str(y))
 
 
-def input_text(n, text):
-    tap(n)
-    time.sleep(0.8)
-    adb("shell", "input", "text", text.replace(" ", "%s"))
-    adb("shell", "input", "keyevent", "111")  # ESC 收起键盘
+def input_text(n, text, tag="in"):
+    for attempt in range(3):
+        tap(n)
+        time.sleep(1.2)
+        adb("shell", "input", "text", text.replace(" ", "%s"))
+        time.sleep(0.8)
+        adb("shell", "input", "keyevent", "66")  # 确认
+        time.sleep(0.6)
+        dump_ui(tag)
+        for m in nodes(tag):
+            if m["box"] == n["box"] and m["text"] == text:
+                return True
+        print(f"[input] 第 {attempt+1} 次未验证到内容, 重试")
+    return False
 
 
 def save_logcat(tag=""):
@@ -137,32 +146,75 @@ def do_login(ns):
 
 def flow_full():
     ns = wait_app()
-    # 若已在主页(有 BottomNav)则跳过登录
-    if not find(ns, "login", "username"):
-        print("[flow] 无登录界面, 可能已登录")
-    else:
-        do_login(ns)
-        time.sleep(15)
-        dump_ui("after_login")
-        summarize(nodes("after_login"), "after_login")
-
-    # 找 Credits / Free Credits 入口
-    for i in range(12):
-        ns = nodes("after_login") if i == 0 else None
-        if ns is None:
-            dump_ui(f"nav_{i:02d}")
-            ns = nodes(f"nav_{i:02d}")
-        tab = find(ns, "credit", "reward", "earn")
-        if tab:
-            print("[flow] 找到 credits 入口")
+    if find(ns, "welcome back", "username", "sign in"):
+        print("[flow] 登录页")
+        ets = [n for n in ns if "EditText" in n["cls"]]
+        input_text(ets[0], USER, "f_user")
+        ok = input_text(ets[1], PASS, "f_pass")
+        print("[flow] 密码填入:", ok)
+        time.sleep(0.5)
+        dump_ui("login_ready")
+        btn = find(nodes("login_ready"), "sign in")
+        if btn:
+            tap(btn)
+        print("[flow] 已提交登录, 等待...")
+    for i in range(10):
+        time.sleep(8)
+        tag = f"home{i:02d}"
+        dump_ui(tag)
+        shot(tag)
+        ns = nodes(tag)
+        if find(ns, "server", "credits", "my servers", "welcome") and not find(ns, "welcome back"):
+            print(f"[flow] 主页就绪 (第{i}轮)")
+            summarize(ns, tag)
+            break
+        summarize(ns, tag)
+        if find(ns, "welcome back"):
+            print("[flow] 仍在登录页, 再点一次 Sign In")
+            b = find(ns, "sign in")
+            if b: tap(b)
+    # 找 credits 入口
+    for i in range(15):
+        tag = f"nav_{i:02d}"
+        dump_ui(tag)
+        shot(tag)
+        ns = nodes(tag)
+        tab = find(ns, "free credit", "credits", "earn")
+        if tab and not find(ns, "welcome back"):
+            print("[flow] 进入 credits tab")
             tap(tab)
             break
-        time.sleep(4)
+        time.sleep(3)
     time.sleep(10)
     dump_ui("credits_tab")
+    shot("credits_tab")
     summarize(nodes("credits_tab"), "credits_tab")
+    # 找 claim 按钮
+    for i in range(20):
+        tag = f"claim_{i:02d}"
+        dump_ui(tag)
+        shot(tag)
+        ns = nodes(tag)
+        btn = find(ns, "claim", "watch ad", "earn", "get credit", "integrity")
+        if btn:
+            print(f"[flow] 点 claim: {btn['text']!r}/{btn['desc']!r}")
+            tap(btn)
+            time.sleep(12)
+        else:
+            # 广告可能是全屏 activity, 找关闭按钮
+            close = None
+            for m in ns:
+                if "close" in (m["text"] + m["desc"]).lower():
+                    close = m; break
+            if close:
+                print("[flow] 广告关闭按钮, 点击")
+                tap(close)
+            time.sleep(6)
+        save_logcat()
+    dump_ui("final")
+    shot("final")
     save_logcat()
-    print("[flow] recon 到此为止, 后续步骤由下一版驱动接管")
+    print("[flow] 完成")
 
 
 def flow_recon(iters=14, gap=6):
