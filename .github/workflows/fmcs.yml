@@ -141,5 +141,6 @@ jobs:
           path: |
             ui/
             logcat.txt
+            reward_log.txt
             proxy.log
             fms.pcap

@@ -318,62 +318,96 @@ def flow_full():
         shot("login_final")
         print("[flow] 登录未成功, 提前结束 (证据已保存)")
         return
-    # 找 credits 入口 (从最近的 home dump 恢复状态)
-    import glob
-    homes = sorted(glob.glob(f"{OUT}/home*.xml"))
-    ns = nodes(homes[-1]) if homes else []
-    for i in range(15):
+    # ===== 真实流程: 主页 -> Credits tab -> Watch Ads -> Watch Ad & Earn =====
+    def in_launcher(ns_):
+        return find(ns_, "predicted app") is not None or find(ns_, "sun, nov") is not None
+
+    def reward_log(pat_kw="Integrity|Reward|PLAY_STORE|AdMob|claim|AdsForCredits|Welcome|credits"):
+        out = adb("shell", f"logcat -d -v time | grep -E '{pat_kw}'", timeout=120)
+        return out if out and "[TIMEOUT]" not in out and "[ERR]" not in out else ""
+
+    def save_reward_log():
+        txt = reward_log()
+        try:
+            open("reward_log.txt", "w").write(txt)
+        except Exception as e:
+            print("[reward] save failed:", e)
+        for ln in txt.splitlines()[-12:]:
+            print("[js]", ln[:190])
+
+    # 1) 主页 tab -> Credits
+    tab = None
+    for i in range(10):
         tag = f"nav_{i:02d}"
-        dump_ui(tag)
-        shot(tag)
+        dump_ui(tag); shot(tag)
         ns = nodes(tag)
-        if find(ns, "welcome back"):
-            print("[nav] 回到登录页, App 状态丢失, 停止 nav")
-            break
-        if find(ns, "predicted app") or find(ns, "sun, nov"):
-            print("[nav] 在桌面, 拉回 App 前台")
+        if in_launcher(ns):
+            print("[nav] 在桌面, 拉回前台")
             adb("shell", f"monkey -p {PKG} -c android.intent.category.LAUNCHER 1")
-            time.sleep(6)
-            continue
-        tab = find(ns, "free credit", "credits", "earn")
+            time.sleep(6); continue
+        tab = find(ns, "credits")
         if tab:
-            print("[flow] 进入 credits tab")
-            tap(tab)
-            break
+            print("[flow] 点 Credits tab")
+            tap(tab); break
         time.sleep(3)
-    time.sleep(10)
-    dump_ui("credits_tab")
-    shot("credits_tab")
-    save_logcat()
-    save_proxy()
+    time.sleep(6)
+    dump_ui("credits_tab"); shot("credits_tab"); save_reward_log()
     summarize(nodes("credits_tab"), "credits_tab")
-    # 找 claim 按钮
-    for i in range(20):
-        tag = f"claim_{i:02d}"
-        dump_ui(tag)
-        shot(tag)
-        save_logcat()
-        save_proxy()
+
+    # 2) Watch Ads for Credits 卡片
+    card = find(nodes("credits_tab"), "watch ads for credits", "watch ads")
+    if card:
+        print("[flow] 点 Watch Ads for Credits")
+        tap(card)
+        time.sleep(8)
+        dump_ui("reward_page"); shot("reward_page"); save_reward_log()
+        summarize(nodes("reward_page"), "reward_page")
+    else:
+        print("[flow] 未找到 Watch Ads for Credits 卡片")
+
+    # 3) Watch Ad & Earn 按钮 (触发 integrity 验证)
+    earn = find(nodes("reward_page") if card else [], "watch ad & earn", "watch ad")
+    if earn:
+        print("[flow] 点 Watch Ad & Earn -> 期望进入 Integrity 验证")
+        tap(earn)
+    else:
+        print("[flow] 未找到 Watch Ad & Earn 按钮")
+
+    # 4) 轮询 integrity / 广告 / claim 全过程, 全程存证据
+    seen = set()
+    for i in range(24):
+        time.sleep(7)
+        tag = f"rw_{i:02d}"
+        dump_ui(tag); shot(tag); save_reward_log(); save_proxy()
         ns = nodes(tag)
-        btn = find(ns, "claim", "watch ad", "earn", "get credit", "integrity")
-        if btn:
-            print(f"[flow] 点 claim: {btn['text']!r}/{btn['desc']!r}")
-            tap(btn)
-            time.sleep(12)
-        else:
-            # 广告可能是全屏 activity, 找关闭按钮
-            close = None
-            for m in ns:
-                if "close" in (m["text"] + m["desc"]).lower():
-                    close = m; break
-            if close:
-                print("[flow] 广告关闭按钮, 点击")
-                tap(close)
-            time.sleep(6)
-        save_logcat()
-    dump_ui("final")
-    shot("final")
-    save_logcat()
+        tsz = " | ".join([x["text"] for x in ns if x["text"]])[:120]
+        print(f"[rw {i}] {tsz}")
+        # 记录 integrity 关键日志
+        txt = reward_log("Authorization ID|Token obtained|Token not obtained|PLAY_STORE_NOT_FOUND|Integrity:|reward/claim|Reward|claim")
+        for ln in txt.splitlines():
+            for key in ("Authorization ID", "Token obtained", "Token not obtained",
+                        "PLAY_STORE_NOT_FOUND", "claim", "Claim", "Reward granted"):
+                if key in ln and ln[16:] not in seen:
+                    seen.add(ln[16:]); print("[js*]", ln[:190])
+        # 关闭广告 (全屏 activity / 关闭按钮)
+        close = None
+        for m in ns:
+            hay = (m["text"] + " " + m["desc"]).lower()
+            if any(k in hay for k in ("close", "关闭", "skip", "×", "dismiss")) and m["box"][2] - m["box"][0] < 200:
+                close = m; break
+        if close:
+            print("[flow] 点广告关闭")
+            tap(close); time.sleep(5); continue
+        # 广告结束后回到 reward 页, 继续点 Watch Ad & Earn (每日 35 次)
+        if find(ns, "watch ad & earn") and i > 3:
+            print("[flow] 回到 reward 页, 再点一次 Watch Ad & Earn")
+            b = find(ns, "watch ad & earn")
+            tap(b); time.sleep(3)
+        if find(ns, "failed to obtain integrity"):
+            print("[flow] !! Integrity 失败: 设备无法签发 Play Integrity token")
+            break
+
+    dump_ui("final"); shot("final"); save_reward_log(); save_logcat()
     print("[flow] 完成")
 
 
