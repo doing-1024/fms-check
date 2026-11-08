@@ -69,7 +69,10 @@ jobs:
           emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim
           script: |
             mkdir -p ui
+            sudo tcpdump -i any -w fms.pcap 'tcp port 443' &
+            TCPDUMP_PID=$!
             if [ "${{ inputs.mode }}" = "probe" ]; then python3 driver/probe.py; else python3 driver/fms_ui.py "${{ inputs.mode }}"; fi
+            sudo kill $TCPDUMP_PID 2>/dev/null || true
 
       - name: Upload UI dumps
         if: always()
@@ -80,3 +83,4 @@ jobs:
             ui/
             logcat.txt
             proxy.log
+            fms.pcap

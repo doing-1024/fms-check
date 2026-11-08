@@ -222,10 +222,28 @@ def net_forensics(tag):
             print("[net] conn:", ll[:130])
 
 
+def guest_api_probe():
+    """guest 内直接发 HTTP 探针, 绕开 app: 判定网络层 vs app 层问题"""
+    print("[probe] guest 内 http 工具:", adb("shell", "which curl wget 2>/dev/null", timeout=20).strip())
+    curl = adb("shell", "which curl 2>/dev/null", timeout=20).strip()
+    if curl and "/" in curl:
+        # GET 探针 (对照: 宿主同请求 <1s 返回 scope JSON)
+        r = adb("shell", f"{curl} -s -m 12 -A FMCS-App https://api.freemcserver.net/v4/app-settings/credits", timeout=40)
+        print("[probe] GET ->", r.strip()[:150])
+        # POST 探针: 用假凭据, 不碰真实账号; 若网络正常会快速返回 4xx JSON
+        r = adb("shell", f"{curl} -s -m 12 -A FMCS-App -H 'Content-Type: application/json' -d '{{\"username\":\"probebot\",\"password\":\"x\",\"scope\":\"ANDROID_APP\"}}' https://api.freemcserver.net/v4/user/login -w ' HTTP=%{{http_code}} t=%{{time_total}}s'", timeout=40)
+        print("[probe] POST ->", r.strip()[:200])
+    else:
+        # wget GET 兼底
+        r = adb("shell", "wget -q -O - -T 12 --header='User-Agent: FMCS-App' https://api.freemcserver.net/v4/app-settings/credits 2>&1 | head -c 200", timeout=40)
+        print("[probe] wget GET ->", r.strip()[:200])
+
+
 def flow_full():
     ns = wait_app()
-    # 登录前先看 guest 网络
+    # 登录前先看 guest 网络 + guest 内 HTTP 探针
     net_forensics("pre_login")
+    guest_api_probe()
     logged_in = False
     if find(ns, "welcome back", "username", "sign in"):
         print("[flow] 登录页")
