@@ -71,6 +71,8 @@ jobs:
           EOF
           cat > $HOME/.android/avd/test.avd/config.ini <<EOF
           avd.ini.encoding=UTF-8
+          abi.type=x86_64
+          hw.cpu.arch=x86_64
           image.sysdir.1=system-images/android-34/google_apis_playstore/x86_64/
           tag.display=Google Play
           tag.id=google_apis_playstore
