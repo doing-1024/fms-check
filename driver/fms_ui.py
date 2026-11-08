@@ -131,7 +131,7 @@ def input_text(n, text, tag="in", placeholder=None, secure=False):
         time.sleep(1.2)
         type_text(text)
         time.sleep(1)
-        adb("shell", "input", "keyevent", "4")  # BACK 收起键盘
+        adb("shell", "input", "keyevent", "111")  # ESC 收起键盘 (BACK 会退 Activity)
         time.sleep(1.2)
         dump_ui(tag)
         for m in nodes(tag):
@@ -287,11 +287,17 @@ def flow_full():
             save_logcat()
             save_proxy()
             ns = nodes(tag)
-            if not find(ns, "welcome back") and (find(ns, "server", "credits", "my servers") or find(ns, "hello")):
+            in_launcher = find(ns, "predicted app") or find(ns, "sun, nov")
+            has_home = find(ns, "my servers") or find(ns, "new server") or find(ns, "credits", "free credits")
+            if not find(ns, "welcome back") and not in_launcher and has_home:
                 print(f"[flow] 主页就绪 (第{i}轮)")
                 logged_in = True
                 summarize(ns, tag)
                 break
+            if in_launcher:
+                print("[flow] App 掉到桌面, 拉回前台")
+                adb("shell", f"monkey -p {PKG} -c android.intent.category.LAUNCHER 1")
+                time.sleep(5)
             if i == 3:
                 net_forensics(f"mid_login_{i}")
             if i == 5:
@@ -321,8 +327,16 @@ def flow_full():
         dump_ui(tag)
         shot(tag)
         ns = nodes(tag)
+        if find(ns, "welcome back"):
+            print("[nav] 回到登录页, App 状态丢失, 停止 nav")
+            break
+        if find(ns, "predicted app") or find(ns, "sun, nov"):
+            print("[nav] 在桌面, 拉回 App 前台")
+            adb("shell", f"monkey -p {PKG} -c android.intent.category.LAUNCHER 1")
+            time.sleep(6)
+            continue
         tab = find(ns, "free credit", "credits", "earn")
-        if tab and not find(ns, "welcome back"):
+        if tab:
             print("[flow] 进入 credits tab")
             tap(tab)
             break
