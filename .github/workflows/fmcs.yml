@@ -54,26 +54,45 @@ jobs:
           sudo systemctl start tinyproxy && sleep 2
           curl -s --max-time 10 -x http://127.0.0.1:8888 -A FMCS-App https://api.freemcserver.net/v4/app-settings/credits | head -c 120; echo " <- proxy check"
 
-      - name: Run emulator + flow
-        uses: reactivecircus/android-emulator-runner@v2
+      - name: Launch emulator (raw, visible logs)
         env:
           FMCS_USER: ${{ secrets.FMCS_USER }}
           FMCS_PASS: ${{ secrets.FMCS_PASS }}
-        with:
-          envs: FMCS_USER,FMCS_PASS
-          api-level: 34
-          target: google_apis_playstore
-          arch: x86_64
-          profile: pixel_5
-          ram-size: 3072M
-          boot-timeout: 900
-          emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim
-          script: |
-            mkdir -p ui
-            sudo tcpdump -i any -w fms.pcap 'tcp port 443' &
-            TCPDUMP_PID=$!
-            if [ "${{ inputs.mode }}" = "probe" ]; then python3 driver/probe.py; else python3 driver/fms_ui.py "${{ inputs.mode }}"; fi
-            sudo kill $TCPDUMP_PID 2>/dev/null || true
+        run: |
+          echo "no" | avdmanager create avd -n test -k "system-images;android-34;google_apis_playstore;x86_64" -d pixel_5 --force
+          sudo tcpdump -i any -w fms.pcap 'tcp port 443' &
+          echo $! > tcpdump.pid
+          nohup $ANDROID_HOME/emulator/emulator -avd test -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim -no-metrics -port 5554 > emu.log 2>&1 &
+          echo "emulator pid: $!"
+          sleep 20
+          timeout 60 adb wait-for-device || echo "wait-for-device TIMEOUT (continuing)"
+          BOOT=0
+          for i in $(seq 1 90); do
+            B=$(adb shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')
+            if [ "$B" = "1" ]; then BOOT=1; echo "boot completed at ${i}0s"; break; fi
+            sleep 10
+          done
+          echo "BOOT=$BOOT"
+          tail -5 emu.log || true
+          if [ "$BOOT" != "1" ]; then echo "EMU-BOOT-FAILED"; tail -40 emu.log; exit 1; fi
+
+      - name: Run diagnosis (probe) or full flow
+        env:
+          FMCS_USER: ${{ secrets.FMCS_USER }}
+          FMCS_PASS: ${{ secrets.FMCS_PASS }}
+        timeout-minutes: 18
+        run: |
+          mkdir -p ui
+          if [ "${{ inputs.mode }}" = "probe" ]; then python3 driver/probe.py; else python3 driver/fms_ui.py "${{ inputs.mode }}"; fi
+
+      - name: Stop emulator + tcpdump
+        if: always()
+        run: |
+          adb emu kill 2>/dev/null || true
+          sleep 3
+          sudo kill $(cat tcpdump.pid) 2>/dev/null || true
+          pkill -f qemu-system 2>/dev/null || true
+          tail -15 emu.log || true
 
       - name: Upload UI dumps
         if: always()
