@@ -59,7 +59,7 @@ jobs:
           FMCS_USER: ${{ secrets.FMCS_USER }}
           FMCS_PASS: ${{ secrets.FMCS_PASS }}
         run: |
-          echo "no" | avdmanager create avd -n test -k "system-images;android-34;google_apis_playstore;x86_64" -d pixel_5 --force
+          echo "no" | $ANDROID_HOME/cmdline-tools/latest/bin/avdmanager create avd -n test -k "system-images;android-34;google_apis_playstore;x86_64" -d pixel_5 --force
           sudo tcpdump -i any -w fms.pcap 'tcp port 443' &
           echo $! > tcpdump.pid
           nohup $ANDROID_HOME/emulator/emulator -avd test -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim -no-metrics -port 5554 > emu.log 2>&1 &
