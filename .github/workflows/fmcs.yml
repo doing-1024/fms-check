@@ -26,8 +26,8 @@ jobs:
         run: |
           gh release download v1 -R "$GITHUB_REPOSITORY" --clobber
           # 静态 curl 给 guest 用 (多个候选源)
-          for U in "https://github.com/moparisthebest/static-curl/releases/latest/download/curl-linux-x86_64-glibc" \
-                   "https://github.com/stunnel/static-curl/releases/latest/download/curl-linux-x86_64-glibc"; do
+          for U in "https://github.com/moparisthebest/static-curl/releases/latest/download/curl-amd64" \
+                   "https://github.com/stunnel/static-curl/releases/latest/download/curl-amd64"; do
             curl -sfL -o guest-curl "$U" && file guest-curl | grep -q "ELF" && { echo "got: $U"; break; }
           done
           ls -la guest-curl 2>/dev/null || echo "NO-GUEST-CURL"
