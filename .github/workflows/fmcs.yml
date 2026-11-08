@@ -61,7 +61,30 @@ jobs:
           FMCS_PASS: ${{ secrets.FMCS_PASS }}
         run: |
           export PATH="$ANDROID_HOME/cmdline-tools/latest/bin:$ANDROID_HOME/platform-tools:$ANDROID_HOME/emulator:$PATH"
-          echo "no" | avdmanager create avd -n test -k "system-images;android-34;google_apis_playstore;x86_64" -d pixel_5 --force
+          # 手工创建 AVD (绕开 avdmanager 的目录不一致问题)
+          mkdir -p $HOME/.android/avd/test.avd
+          cat > $HOME/.android/avd/test.ini <<EOF
+          avd.ini.encoding=UTF-8
+          path=$HOME/.android/avd/test.avd
+          path.rel=avd/test.avd
+          target=android-34
+          EOF
+          cat > $HOME/.android/avd/test.avd/config.ini <<EOF
+          avd.ini.encoding=UTF-8
+          image.sysdir.1=system-images/android-34/google_apis_playstore/x86_64/
+          tag.display=Google Play
+          tag.id=google_apis_playstore
+          hw.lcd.density=440
+          hw.lcd.width=1080
+          hw.lcd.height=2340
+          hw.ramSize=3072
+          hw.cpu.ncore=2
+          hw.gpu.enabled=yes
+          hw.gpu.mode=swiftshader_indirect
+          disk.dataPartition.size=6G
+          EOF
+          sed -i 's/^          //' $HOME/.android/avd/test.ini $HOME/.android/avd/test.avd/config.ini
+          ls -la $HOME/.android/avd/
           sudo tcpdump -i any -w fms.pcap 'tcp port 443' &
           echo $! > tcpdump.pid
           nohup $ANDROID_HOME/emulator/emulator -avd test -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim -no-metrics -port 5554 > emu.log 2>&1 &
