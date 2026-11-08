@@ -224,19 +224,31 @@ def net_forensics(tag):
 
 def guest_api_probe():
     """guest 内直接发 HTTP 探针, 绕开 app: 判定网络层 vs app 层问题"""
-    print("[probe] guest 内 http 工具:", adb("shell", "which curl wget 2>/dev/null", timeout=20).strip())
-    curl = adb("shell", "which curl 2>/dev/null", timeout=20).strip()
-    if curl and "/" in curl:
-        # GET 探针 (对照: 宿主同请求 <1s 返回 scope JSON)
-        r = adb("shell", f"{curl} -s -m 12 -A FMCS-App https://api.freemcserver.net/v4/app-settings/credits", timeout=40)
-        print("[probe] GET ->", r.strip()[:150])
-        # POST 探针: 用假凭据, 不碰真实账号; 若网络正常会快速返回 4xx JSON
-        r = adb("shell", f"{curl} -s -m 12 -A FMCS-App -H 'Content-Type: application/json' -d '{{\"username\":\"probebot\",\"password\":\"x\",\"scope\":\"ANDROID_APP\"}}' https://api.freemcserver.net/v4/user/login -w ' HTTP=%{{http_code}} t=%{{time_total}}s'", timeout=40)
-        print("[probe] POST ->", r.strip()[:200])
-    else:
-        # wget GET 兼底
-        r = adb("shell", "wget -q -O - -T 12 --header='User-Agent: FMCS-App' https://api.freemcserver.net/v4/app-settings/credits 2>&1 | head -c 200", timeout=40)
-        print("[probe] wget GET ->", r.strip()[:200])
+    # 1) 尝试推静态 curl 进 guest
+    push = adb("push", "guest-curl", "/data/local/tmp/curl", timeout=60)
+    print("[probe] push curl:", push.strip()[:100], flush=True)
+    adb("shell", "chmod 755 /data/local/tmp/curl", timeout=20)
+    curl = "/data/local/tmp/curl"
+    chk = adb("shell", f"{curl} --version 2>&1 | head -1", timeout=30)
+    if "curl" not in chk:
+        print("[probe] guest curl 不可用:", chk.strip()[:100], flush=True)
+        # Chrome 兼底: 浏览器开 GET 页面看结果
+        print("[probe] fallback: Chrome 打开 API 页面", flush=True)
+        adb("shell", "am start -a android.intent.action.VIEW -d https://api.freemcserver.net/v4/app-settings/credits", timeout=30)
+        time.sleep(12)
+        adb("shell", "screencap -p /sdcard/chrome_probe.png", timeout=30)
+        subprocess.run(["adb", "pull", "/sdcard/chrome_probe.png", "ui/chrome_probe.png"], capture_output=True, timeout=60)
+        adb("shell", "input keyevent 4", timeout=20)
+        return
+    print("[probe] guest curl OK:", chk.strip()[:60], flush=True)
+    # GET 探针 (对照: 宿主同请求 <1s 返回 scope JSON)
+    r = adb("shell", f"{curl} -s -m 12 -A FMCS-App https://api.freemcserver.net/v4/app-settings/credits", timeout=40)
+    print("[probe] GET ->", r.strip()[:150])
+    # POST 探针: 用假凭据, 不碰真实账号; 若网络正常会快速返回 4xx JSON
+    r = adb("shell", f"{curl} -s -m 15 -A FMCS-App -H 'Content-Type: application/json' -d '{{\"username\":\"probebot\",\"password\":\"x\",\"scope\":\"ANDROID_APP\"}}' https://api.freemcserver.net/v4/user/login -w ' HTTP=%{{http_code}} t=%{{time_total}}s'", timeout=60)
+    print("[probe] POST ->", r.strip()[:200])
+    r = adb("shell", f"{curl} -s -m 15 -A FMCS-App -H 'Content-Type: application/json' -d '{{\"username\":\"probebot2\",\"password\":\"x\",\"scope\":\"ANDROID_APP\"}}' https://api.freemcserver.net/v4/user/login -w ' HTTP=%{{http_code}} t=%{{time_total}}s'", timeout=60)
+    print("[probe] POST2 ->", r.strip()[:200])
 
 
 def flow_full():
