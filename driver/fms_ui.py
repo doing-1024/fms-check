@@ -241,14 +241,17 @@ def guest_api_probe():
         adb("shell", "input keyevent 4", timeout=20)
         return
     print("[probe] guest curl OK:", chk.strip()[:60], flush=True)
+    RES = "--resolve api.freemcserver.net:443:104.26.0.208"  # 绕过 musl DNS bug
+    r = adb("shell", f"getprop net.dns1; ping -c1 -W2 api.freemcserver.net 2>&1 | head -2", timeout=30)
+    print("[probe] dns/ping ->", r.strip()[:120], flush=True)
     # GET 探针 (对照: 宿主同请求 <1s 返回 scope JSON)
-    r = adb("shell", f"{curl} -s -m 12 -A FMCS-App https://api.freemcserver.net/v4/app-settings/credits", timeout=40)
-    print("[probe] GET ->", r.strip()[:150])
+    r = adb("shell", f"{curl} -s -m 12 {RES} -A FMCS-App https://api.freemcserver.net/v4/app-settings/credits -w ' HTTP=%{{http_code}} t=%{{time_total}}s'", timeout=40)
+    print("[probe] GET ->", r.strip()[:200])
     # POST 探针: 用假凭据, 不碰真实账号; 若网络正常会快速返回 4xx JSON
-    r = adb("shell", f"{curl} -s -m 15 -A FMCS-App -H 'Content-Type: application/json' -d '{{\"username\":\"probebot\",\"password\":\"x\",\"scope\":\"ANDROID_APP\"}}' https://api.freemcserver.net/v4/user/login -w ' HTTP=%{{http_code}} t=%{{time_total}}s'", timeout=60)
-    print("[probe] POST ->", r.strip()[:200])
-    r = adb("shell", f"{curl} -s -m 15 -A FMCS-App -H 'Content-Type: application/json' -d '{{\"username\":\"probebot2\",\"password\":\"x\",\"scope\":\"ANDROID_APP\"}}' https://api.freemcserver.net/v4/user/login -w ' HTTP=%{{http_code}} t=%{{time_total}}s'", timeout=60)
-    print("[probe] POST2 ->", r.strip()[:200])
+    r = adb("shell", f"{curl} -s -m 15 {RES} -A FMCS-App -H 'Content-Type: application/json' -d '{{\"username\":\"probebot\",\"password\":\"x\",\"scope\":\"ANDROID_APP\"}}' https://api.freemcserver.net/v4/user/login -w ' HTTP=%{{http_code}} t=%{{time_total}}s'", timeout=60)
+    print("[probe] POST ->", r.strip()[:220])
+    r = adb("shell", f"{curl} -s -m 15 {RES} -A FMCS-App -H 'Content-Type: application/json' -d '{{\"username\":\"probebot2\",\"password\":\"x\",\"scope\":\"ANDROID_APP\"}}' https://api.freemcserver.net/v4/user/login -w ' HTTP=%{{http_code}} t=%{{time_total}}s'", timeout=60)
+    print("[probe] POST2 ->", r.strip()[:220])
 
 
 def flow_full():
