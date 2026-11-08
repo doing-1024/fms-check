@@ -66,7 +66,7 @@ jobs:
           arch: x86_64
           profile: pixel_5
           ram-size: 3072M
-          emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim -feature -NetSim -wifi false -http-proxy http://127.0.0.1:8888
+          emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim
           script: |
             mkdir -p ui
             if [ "${{ inputs.mode }}" = "probe" ]; then python3 driver/probe.py; else python3 driver/fms_ui.py "${{ inputs.mode }}"; fi
