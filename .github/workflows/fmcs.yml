@@ -129,7 +129,9 @@ jobs:
           pkill -f qemu-system 2>/dev/null || true
           tail -15 emu.log || true
           echo "===== 关键 logcat (RN) ====="
-          grep -E "ReactNativeJS" logcat.txt 2>/dev/null | grep -E "Executing|Welcome|Invalid|Authentication|Stored|Integrity|Reward|claim|Claim|PLAY_STORE|credits|Credits|AdMob|ad" | tail -60 | cut -c1-220 || true
+          grep -E "ReactNativeJS" logcat.txt 2>/dev/null | grep -vE "HeterodyneSyncer" | tail -80 | cut -c1-230 || true
+          echo "===== App 数据目录 (debuggable?) ====="
+          $ANDROID_HOME/platform-tools/adb shell run-as com.nunofacha.fmcs ls -R /data/data/com.nunofacha.fmcs 2>&1 | head -30 || true
           echo "===== FMCS 443 流量分析 (104.26.0.0/16) ====="
           tcpdump -r fms.pcap -nn 2>/dev/null | grep -E "104\.26\.(0|1)\." | tail -50
           echo "===== 流量统计 ====="

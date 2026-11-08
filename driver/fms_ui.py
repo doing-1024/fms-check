@@ -325,7 +325,7 @@ def flow_full():
     def in_launcher(ns_):
         return find(ns_, "predicted app") is not None or find(ns_, "sun, nov") is not None
 
-    def reward_log(pat_kw="Integrity|Reward|PLAY_STORE|AdMob|claim|AdsForCredits|Welcome|credits"):
+    def reward_log(pat_kw='"success"|Integrity|Reward|PLAY_STORE|AdMob|claim|AdsForCredits|Welcome|credits|device|Device'):
         out = adb("shell", f"logcat -d -v time | grep -E '{pat_kw}'", timeout=120)
         return out if out and "[TIMEOUT]" not in out and "[ERR]" not in out else ""
 
@@ -386,7 +386,7 @@ def flow_full():
         tsz = " | ".join([x["text"] for x in ns if x["text"]])[:120]
         print(f"[rw {i}] {tsz}")
         # 记录 integrity 关键日志
-        txt = reward_log("Authorization ID|Token obtained|Token not obtained|PLAY_STORE_NOT_FOUND|Integrity:|reward/claim|Reward|claim")
+        txt = reward_log("Authorization ID|Token obtained|Token not obtained|PLAY_STORE_NOT_FOUND|Integrity:|claim|Reward|\"success\"|device")
         for ln in txt.splitlines():
             for key in ("Authorization ID", "Token obtained", "Token not obtained",
                         "PLAY_STORE_NOT_FOUND", "claim", "Claim", "Reward granted"):
