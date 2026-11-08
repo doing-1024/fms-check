@@ -20,6 +20,17 @@ jobs:
           sudo udevadm trigger --name-match=kvm
           ls -al /dev/kvm
 
+      - name: Download APK
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release download v1 -R "$GITHUB_REPOSITORY" --clobber
+
+      - name: Pre-install system image (before WARP)
+        run: |
+          yes | sdkmanager --licenses > /dev/null || true
+          sdkmanager --install "system-images;android-34;google_apis_playstore;x86_64" > /dev/null 2>&1 || true
+          sdkmanager --list | grep -c "system-images;android-34;google_apis_playstore;x86_64" || echo "IMAGE-MISSING"
+
       - name: Cloudflare WARP (bypass CF block of GH IPs)
         run: |
           CODENAME=$(lsb_release -cs)
@@ -35,11 +46,6 @@ jobs:
           curl -s --max-time 15 https://www.cloudflare.com/cdn-cgi/trace | grep -E "ip=|warp=" || true
           echo "--- fmcs check ---"
           curl -s --max-time 20 -A "FMCS-App" https://api.freemcserver.net/v4/app-settings/credits | head -c 200; echo
-
-      - name: Download APK
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: gh release download v1 -R "$GITHUB_REPOSITORY" --clobber
 
       - name: Start tinyproxy (emulator egress via WARP, avoid guest IPv6 blackhole)
         run: |
