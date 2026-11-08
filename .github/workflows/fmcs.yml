@@ -27,7 +27,8 @@ jobs:
 
       - name: Pre-install system image (before WARP)
         run: |
-          yes | sdkmanager --licenses > /dev/null || true
+          export PATH="$ANDROID_HOME/cmdline-tools/latest/bin:$ANDROID_HOME/platform-tools:$ANDROID_HOME/emulator:$PATH"
+          yes | sdkmanager --licenses > /dev/null 2>&1 || true
           sdkmanager --install "platform-tools" "platforms;android-34" "build-tools;37.0.0" "emulator" "system-images;android-34;google_apis_playstore;x86_64" 2>&1 | tail -3
           sdkmanager --list_installed 2>/dev/null | grep google_apis_playstore || echo "IMAGE-MISSING"
 
@@ -59,7 +60,8 @@ jobs:
           FMCS_USER: ${{ secrets.FMCS_USER }}
           FMCS_PASS: ${{ secrets.FMCS_PASS }}
         run: |
-          echo "no" | $ANDROID_HOME/cmdline-tools/latest/bin/avdmanager create avd -n test -k "system-images;android-34;google_apis_playstore;x86_64" -d pixel_5 --force
+          export PATH="$ANDROID_HOME/cmdline-tools/latest/bin:$ANDROID_HOME/platform-tools:$ANDROID_HOME/emulator:$PATH"
+          echo "no" | avdmanager create avd -n test -k "system-images;android-34;google_apis_playstore;x86_64" -d pixel_5 --force
           sudo tcpdump -i any -w fms.pcap 'tcp port 443' &
           echo $! > tcpdump.pid
           nohup $ANDROID_HOME/emulator/emulator -avd test -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim -no-metrics -port 5554 > emu.log 2>&1 &
@@ -82,13 +84,14 @@ jobs:
           FMCS_PASS: ${{ secrets.FMCS_PASS }}
         timeout-minutes: 18
         run: |
+          export PATH="$ANDROID_HOME/platform-tools:$PATH"
           mkdir -p ui
           if [ "${{ inputs.mode }}" = "probe" ]; then python3 driver/probe.py; else python3 driver/fms_ui.py "${{ inputs.mode }}"; fi
 
       - name: Stop emulator + tcpdump
         if: always()
         run: |
-          adb emu kill 2>/dev/null || true
+          $ANDROID_HOME/platform-tools/adb emu kill 2>/dev/null || true
           sleep 3
           sudo kill $(cat tcpdump.pid) 2>/dev/null || true
           pkill -f qemu-system 2>/dev/null || true
