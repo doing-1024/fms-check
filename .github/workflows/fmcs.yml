@@ -28,7 +28,7 @@ jobs:
       - name: Pre-install system image (before WARP)
         run: |
           yes | sdkmanager --licenses > /dev/null || true
-          sdkmanager --install "system-images;android-34;google_apis_playstore;x86_64" 2>&1 | tail -3
+          sdkmanager --install "platform-tools" "platforms;android-34" "build-tools;37.0.0" "emulator" "system-images;android-34;google_apis_playstore;x86_64" 2>&1 | tail -3
           sdkmanager --list_installed 2>/dev/null | grep google_apis_playstore || echo "IMAGE-MISSING"
 
       - name: Cloudflare WARP (bypass CF block of GH IPs)
@@ -66,6 +66,7 @@ jobs:
           arch: x86_64
           profile: pixel_5
           ram-size: 3072M
+          boot-timeout: 900
           emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim
           script: |
             mkdir -p ui
