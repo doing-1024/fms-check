@@ -28,8 +28,8 @@ jobs:
       - name: Pre-install system image (before WARP)
         run: |
           yes | sdkmanager --licenses > /dev/null || true
-          sdkmanager --install "system-images;android-34;google_apis_playstore;x86_64" > /dev/null 2>&1 || true
-          sdkmanager --list | grep -c "system-images;android-34;google_apis_playstore;x86_64" || echo "IMAGE-MISSING"
+          sdkmanager --install "system-images;android-34;google_apis_playstore;x86_64" 2>&1 | tail -3
+          sdkmanager --list_installed 2>/dev/null | grep google_apis_playstore || echo "IMAGE-MISSING"
 
       - name: Cloudflare WARP (bypass CF block of GH IPs)
         run: |
