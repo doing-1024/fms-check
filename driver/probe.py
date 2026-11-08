@@ -50,7 +50,6 @@ def wait_app(t=30):
 
 
 def main():
-    pid = ""
     # 装 4 个 split APK
     print("[install]", adb("install-multiple", "-r", "-g", "fms_patched-aligned-debugSigned.apk",
                            "cfg_arm64-aligned-debugSigned.apk", "config.en-aligned-debugSigned.apk",
@@ -59,35 +58,14 @@ def main():
     if not pid or not pid.isdigit():
         print("[probe] App 进程不存在, 放弃", flush=True)
         return
-    # 等 RN 渲染
-    time.sleep(15)
-    print("\n[probe] ===== guest HTTP 探针 =====", flush=True)
-    print("[probe] tools:", adb("shell", "which curl wget", timeout=20).strip(), flush=True)
-    # GET 探针 (宿主同请求 <1s 返回 scope JSON)
-    r = adb("shell", "curl -s -m 12 -A FMCS-App https://api.freemcserver.net/v4/app-settings/credits", timeout=40)
-    print("[probe] GET  ->", r.strip()[:150], flush=True)
-    # POST 探针: 假凭据, 不碰真实账号; 网络正常时服务端会快速回 4xx JSON
-    r = adb("shell",
-            'curl -s -m 15 -A FMCS-App -H "Content-Type: application/json" '
-            '-d \'{"username":"probebot","password":"x","scope":"ANDROID_APP"}\' '
-            'https://api.freemcserver.net/v4/user/login -w " HTTP=%{http_code} t=%{time_total}s"',
-            timeout=60)
-    print("[probe] POST ->", r.strip()[:220], flush=True)
-    # 第二次 POST 验证稳定性
-    r = adb("shell",
-            'curl -s -m 15 -A FMCS-App -H "Content-Type: application/json" '
-            '-d \'{"username":"probebot2","password":"x","scope":"ANDROID_APP"}\' '
-            'https://api.freemcserver.net/v4/user/login -w " HTTP=%{http_code} t=%{time_total}s"',
-            timeout=60)
-    print("[probe] POST2 ->", r.strip()[:220], flush=True)
-    print("\n[probe] ===== socket 取证 =====", flush=True)
-    r = adb("shell", "ss -tn", timeout=30)
-    for ln in r.splitlines():
-        if ":443" in ln:
-            print("[probe] sock:", ln.strip()[:130], flush=True)
-    # logcat 再存一份 (含 app 网络日志)
-    adb("shell", "logcat -d > /sdcard/lc2.txt")
-    subprocess.run(["adb", "pull", "/sdcard/lc2.txt", "logcat.txt"], capture_output=True, timeout=60)
+    time.sleep(15)  # 等 RN 渲染
+    # 复用 fms_ui 的探针 + 取证 (同目录)
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import fms_ui
+    fms_ui.adb = adb
+    fms_ui.OUT = OUT
+    fms_ui.guest_api_probe()
+    fms_ui.net_forensics("post_probe")
     print("[probe] 完成", flush=True)
 
 
