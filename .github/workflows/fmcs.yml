@@ -128,6 +128,8 @@ jobs:
           sudo kill $(cat tcpdump.pid) 2>/dev/null || true
           pkill -f qemu-system 2>/dev/null || true
           tail -15 emu.log || true
+          echo "===== 关键 logcat (RN) ====="
+          grep -E "ReactNativeJS" logcat.txt 2>/dev/null | grep -E "Executing|Welcome|Invalid|Authentication|Stored|Integrity|Reward|claim|Claim|PLAY_STORE|credits|Credits|AdMob|ad" | tail -60 | cut -c1-220 || true
           echo "===== FMCS 443 流量分析 (104.26.0.0/16) ====="
           tcpdump -r fms.pcap -nn 2>/dev/null | grep -E "104\.26\.(0|1)\." | tail -50
           echo "===== 流量统计 ====="

@@ -107,17 +107,20 @@ KEYMAP.update({"@": 77, ".": 56, ",": 55, "-": 69, "_": 73, "/": 76, "!": 71})
 
 
 def type_text(text):
-    """逐字符 keyevent，大小写用 SHIFT，最稳"""
-    for ch in text:
-        if ch.isupper():
-            adb("shell", "input", "keyevent", "60")  # SHIFT down
-            adb("shell", "input", "keyevent", str(KEYMAP[ch.lower()]))
-            adb("shell", "input", "keyevent", "60")  # SHIFT off
-        elif ch in KEYMAP:
-            adb("shell", "input", "keyevent", str(KEYMAP[ch]))
-        else:
-            adb("shell", "input", "text", ch)
-        time.sleep(0.15)
+    """优先 input text (精确字符); 失败时逐字符 keyevent"""
+    esc = text.replace(" ", "%s").replace("&", "\\&").replace("<", "\\<").replace(">", "\\>").replace("(", "\\(").replace(")", "\\)")
+    out = adb("shell", "input", "text", esc)
+    if "Error" in (out or "") or "Exception" in (out or ""):
+        print("[type] input text 失败, 回退 keyevent:", out.strip()[:80])
+        for ch in text:
+            if ch.isupper():
+                adb("shell", "input", "keyevent", "60")
+                adb("shell", "input", "keyevent", str(KEYMAP[ch.lower()]))
+            elif ch in KEYMAP:
+                adb("shell", "input", "keyevent", str(KEYMAP[ch]))
+            else:
+                adb("shell", "input", "text", ch)
+            time.sleep(0.12)
 
 
 def input_text(n, text, tag="in", placeholder=None, secure=False):
