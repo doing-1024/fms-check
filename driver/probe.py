@@ -38,12 +38,32 @@ def javabin(name):
     return name
 
 
+STUB_SRC = """package com.ammarahmed.mmkv;
+public class MMKV {
+    public static MMKV mmkvWithID(String id, int mode, String root) { return null; }
+    public static MMKV mmkvWithID(String id, int mode) { return null; }
+    public boolean encode(String k, String v) { return false; }
+}
+"""
+
+
+def build_stub():
+    os.makedirs("/tmp/stub/com/ammarahmed/mmkv", exist_ok=True)
+    src = "/tmp/stub/com/ammarahmed/mmkv/MMKV.java"
+    with open(src, "w") as f:
+        f.write(STUB_SRC)
+    r = subprocess.run([javabin("javac"), "-d", "/tmp/stub", src], capture_output=True, text=True)
+    print("[stub] javac:", (r.stdout or "") + (r.stderr or "") or "ok", flush=True)
+    return "/tmp/stub"
+
+
 def jdb_eval(pid, expr):
     adb("forward", "tcp:8700", f"jdwp:{pid}")
+    cp = build_stub()
     script = f"suspend\nprint {expr}\nresume\nexit\n"
     print(f"[jdb] pid={pid} expr={expr[:90]}", flush=True)
     try:
-        r = subprocess.run([javabin("jdb"), "-attach", "localhost:8700"],
+        r = subprocess.run([javabin("jdb"), "-classpath", cp, "-attach", "localhost:8700"],
                            input=script, capture_output=True, text=True, timeout=180)
         out = (r.stdout or "") + (r.stderr or "")
     except Exception as e:
@@ -72,6 +92,7 @@ def main():
         return
 
     print("\n[probe] ===== 写入前 mmkv =====", flush=True)
+    print(adb("shell", f"run-as {PKG} ls -la {MMKV_ROOT} 2>&1"))
     print(adb("shell", f"run-as {PKG} cat {MMKV_ROOT}/default 2>/dev/null | strings | head -20"))
 
     expr = (f'com.ammarahmed.mmkv.MMKV.mmkvWithID("default", 1, "{MMKV_ROOT}")'
