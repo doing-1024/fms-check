@@ -29,6 +29,11 @@ public class MmkvInject {
         }
         ThreadReference r = (main != null) ? main : any;
         if (r == null) throw new RuntimeException("no suspended thread");
+        try {
+            if (r.suspendCount() <= 0) r.suspend();
+        } catch (Exception e) {
+            System.out.println("[jdi] thread.suspend 失败: " + e);
+        }
         return r;
     }
 

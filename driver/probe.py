@@ -77,6 +77,13 @@ def main():
     print(adb("shell", f"run-as {PKG} ls -laR /data/data/{PKG}/files 2>&1 | head -30"))
     print(adb("shell", f"run-as {PKG} cat {MMKV_ROOT}/default 2>/dev/null | strings | head -20"))
 
+    print("[probe] 等待 MMKV 文件创建...", flush=True)
+    for i in range(12):
+        t = adb("shell", f"run-as {PKG} ls {MMKV_ROOT}/default 2>/dev/null")
+        if "default" in t and "No such" not in t:
+            print(f"[probe] mmkv 就绪 t={i*5}s", flush=True)
+            break
+        time.sleep(5)
     jdi_inject(pid, "deviceId", DEV_ID)
 
     print("\n[probe] ===== 写入后 mmkv =====", flush=True)
