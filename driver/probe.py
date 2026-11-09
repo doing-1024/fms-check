@@ -51,6 +51,16 @@ def main():
     out = adb("shell", "logcat -d -v time | grep -F ReactNativeJS", timeout=120)
     for l in [x for x in out.splitlines() if x.strip()][:60]:
         print("[rn]", l[:230])
+    print("\n[diag] ===== android.R.attr 真实 ID =====", flush=True)
+    for jar in [os.environ.get("ANDROID_HOME","") + "/platforms/android-34/android.jar",
+                os.environ.get("ANDROID_HOME","") + "/platforms/android-35/android.jar"]:
+        if os.path.exists(jar):
+            r = subprocess.run(["javap", "-p", "-constants", "-cp", jar, "android.R$attr"],
+                               capture_output=True, text=True)
+            for line in (r.stdout or "").splitlines():
+                if any(k in line for k in ("debuggable", "allowBackup", "extractNativeLibs")):
+                    print("[attr]", line.strip())
+            break
     print("\n[diag] ===== package flags =====", flush=True)
     print(adb("shell", "dumpsys package com.nunofacha.fmcs | grep -iE 'flags=|pkgFlags|DEBUGGABLE' | head -8"))
     print(adb("shell", "pm dump com.nunofacha.fmcs | grep -iE 'flags|debuggable' | head -8"))
