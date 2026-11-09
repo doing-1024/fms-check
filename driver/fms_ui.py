@@ -18,6 +18,17 @@ USER = os.environ.get("FMCS_USER", "doing1024")
 PASS = os.environ.get("FMCS_PASS", "")
 
 
+try:
+    from mmkv_inject import inject_device_id, wait_mmkv, DEV_ID
+except Exception as _e:  # pragma: no cover
+    print("[warn] mmkv_inject 不可用:", _e)
+    inject_device_id = None
+    DEV_ID = ""
+
+    def wait_mmkv(*a, **k):
+        return False
+
+
 def adb(*args, timeout=90):
     try:
         r = subprocess.run(["adb", *args], capture_output=True, text=True, timeout=timeout)
@@ -325,7 +336,7 @@ def flow_full():
     def in_launcher(ns_):
         return find(ns_, "predicted app") is not None or find(ns_, "sun, nov") is not None
 
-    def reward_log(pat_kw='"success"|Integrity|Reward|PLAY_STORE|AdMob|claim|AdsForCredits|Welcome|credits|device|Device'):
+    def reward_log(pat_kw='"success"|Integrity|Reward|PLAY_STORE|AdMob|claim|AdsForCredits|Welcome|credits|device|Device|registration|nonce|Nonce|credits'):
         out = adb("shell", f"logcat -d -v time | grep -E '{pat_kw}'", timeout=120)
         return out if out and "[TIMEOUT]" not in out and "[ERR]" not in out else ""
 
@@ -452,6 +463,17 @@ def main():
         print("[!] App 未存活, dump 崩溃日志")
         save_logcat()
         sys.exit(1)
+    # ==== 关键: 用 JDWP 让 App 自己的 MMKV 写入 deviceId ====
+    if inject_device_id:
+        print("[main] 等 MMKV 文件就绪...")
+        wait_mmkv(adb)
+        pids = (app_pid() or "").split()
+        print("[main] pids =", pids)
+        ok = inject_device_id(adb, pids)
+        print("[main] deviceId 注入:", "OK" if ok else "FAILED")
+        # 注入后确认 App 仍在运行且停在登录页
+        time.sleep(3)
+        print("[main] pid after inject:", app_pid() or "dead")
     if mode == "full":
         flow_full()
     else:
