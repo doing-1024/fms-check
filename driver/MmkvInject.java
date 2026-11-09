@@ -20,6 +20,18 @@ import java.util.Map;
  * 用法: java MmkvInject <host> <port> <mmkvID> <rootDir> <key> <value>
  */
 public class MmkvInject {
+    static ThreadReference pickThread(VirtualMachine vm) {
+        ThreadReference main = null, any = null;
+        for (ThreadReference t : vm.allThreads()) {
+            if (!t.isSuspended()) continue;
+            if (any == null) any = t;
+            if ("main".equals(t.name())) { main = t; break; }
+        }
+        ThreadReference r = (main != null) ? main : any;
+        if (r == null) throw new RuntimeException("no suspended thread");
+        return r;
+    }
+
     public static void main(String[] argv) throws Exception {
         String host = argv[0];
         int port = Integer.parseInt(argv[1]);
@@ -36,11 +48,7 @@ public class MmkvInject {
         if (cargs.containsKey("timeout")) cargs.get("timeout").setValue("30000");
         VirtualMachine vm = conn.attach(cargs);
         vm.suspend();
-        ThreadReference thread0 = null;
-        for (ThreadReference t : vm.allThreads()) {
-            if (t.isSuspended()) { thread0 = t; break; }
-        }
-        if (thread0 == null) throw new RuntimeException("no suspended thread");
+        ThreadReference thread0 = pickThread(vm);
         try {
             List<ReferenceType> types = vm.classesByName("com.ammarahmed.mmkv.MMKV");
             for (int i = 0; i < 12 && types.isEmpty(); i++) {
@@ -77,7 +85,9 @@ public class MmkvInject {
                 throw new RuntimeException("MMKV class not loaded in target process");
             }
             ClassType ct = (ClassType) types.get(0);
+            thread0 = pickThread(vm);
             ThreadReference thread = thread0;
+            System.out.println("[jdi] thread=" + thread.name());
 
             Method factory = null;
             for (Method m : ct.methodsByName("mmkvWithID")) {
