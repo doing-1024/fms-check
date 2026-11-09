@@ -38,20 +38,26 @@ def javabin(name):
     return name
 
 
-def jdi_inject(pid, key, value):
-    adb("forward", "tcp:8700", f"jdwp:{pid}")
+def jdi_inject(pids, key, value):
     src = os.path.join(os.path.dirname(os.path.abspath(__file__)), "MmkvInject.java")
     r = subprocess.run([javabin("javac"), "-d", "/tmp/jdi", src], capture_output=True, text=True)
     print("[jdi] javac:", ((r.stdout or "") + (r.stderr or "")).strip() or "ok", flush=True)
-    try:
-        r = subprocess.run([javabin("java"), "-classpath", "/tmp/jdi", "MmkvInject",
-                            "localhost", "8700", "default", MMKV_ROOT, key, value],
-                           capture_output=True, text=True, timeout=180)
-        out = (r.stdout or "") + (r.stderr or "")
-    except Exception as e:
-        out = f"[jdi ERR] {e}"
-    for line in out.splitlines()[-25:]:
-        print("[jdi]", line[:220], flush=True)
+    out = ""
+    for i, pid in enumerate(pids):
+        port = 8700 + i
+        adb("forward", "--remove-all")
+        print(adb("forward", f"tcp:{port}", f"jdwp:{pid}").strip(), flush=True)
+        try:
+            r = subprocess.run([javabin("java"), "-classpath", "/tmp/jdi", "MmkvInject",
+                                "localhost", str(port), "default", MMKV_ROOT, key, value],
+                               capture_output=True, text=True, timeout=180)
+            out = (r.stdout or "") + (r.stderr or "")
+        except Exception as e:
+            out = f"[jdi ERR] {e}"
+        for line in out.splitlines()[-25:]:
+            print(f"[jdi {pid}]", line[:220], flush=True)
+        if "readback" in out:
+            break
     return out
 
 
@@ -64,8 +70,6 @@ def main():
     for i in range(10):
         time.sleep(5)
         pid = adb("shell", f"pidof {PKG}").strip()
-        if pid:
-            pid = pid.split()[-1]
         print(f"[probe] t={i*5}s pid={pid!r}", flush=True)
         if pid:
             break
@@ -84,7 +88,9 @@ def main():
             print(f"[probe] mmkv 就绪 t={i*5}s", flush=True)
             break
         time.sleep(5)
-    jdi_inject(pid, "deviceId", DEV_ID)
+    pids = pid.split()
+    print("[probe] pids =", pids, flush=True)
+    jdi_inject(pids, "deviceId", DEV_ID)
 
     print("\n[probe] ===== 写入后 mmkv =====", flush=True)
     print(adb("shell", f"run-as {PKG} ls -la {MMKV_ROOT} 2>&1"))
