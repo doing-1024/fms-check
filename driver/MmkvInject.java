@@ -104,7 +104,7 @@ public class MmkvInject {
                 }
                 List<Value> ta = new ArrayList<>();
                 ta.add(vm.mirrorOf(7));
-                Value tv = thread.invokeMethod(vof, ta, ObjectReference.INVOKE_SINGLE_THREADED);
+                Value tv = strCls.invokeMethod(thread, vof, ta, ObjectReference.INVOKE_SINGLE_THREADED);
                 System.out.println("[jdi] trivial invoke ok: valueOf(7)=" + tv);
             } catch (Exception e) {
                 System.out.println("[jdi] trivial invoke FAILED: " + e.getClass().getName() + ": " + e.getMessage());
