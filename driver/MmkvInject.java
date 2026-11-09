@@ -30,10 +30,12 @@ public class MmkvInject {
         ThreadReference r = (main != null) ? main : any;
         if (r == null) throw new RuntimeException("no suspended thread");
         try {
-            if (r.suspendCount() <= 0) r.suspend();
+            r.suspend();
         } catch (Exception e) {
             System.out.println("[jdi] thread.suspend 失败: " + e);
         }
+        System.out.println("[jdi] picked " + r.name() + " suspended=" + r.isSuspended()
+                           + " count=" + (r.isSuspended() ? r.suspendCount() : -1));
         return r;
     }
 
@@ -52,7 +54,6 @@ public class MmkvInject {
         cargs.get("port").setValue(String.valueOf(port));
         if (cargs.containsKey("timeout")) cargs.get("timeout").setValue("30000");
         VirtualMachine vm = conn.attach(cargs);
-        vm.suspend();
         ThreadReference thread0 = pickThread(vm);
         try {
             List<ReferenceType> types = vm.classesByName("com.ammarahmed.mmkv.MMKV");
