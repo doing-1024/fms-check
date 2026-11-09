@@ -51,6 +51,11 @@ def main():
     out = adb("shell", "logcat -d -v time | grep -F ReactNativeJS", timeout=120)
     for l in [x for x in out.splitlines() if x.strip()][:60]:
         print("[rn]", l[:230])
+    print("\n[diag] ===== package flags =====", flush=True)
+    print(adb("shell", "dumpsys package com.nunofacha.fmcs | grep -iE 'flags=|DEBUGGABLE|pkgFlags' | head -6"))
+    print("\n[diag] ===== run-as 可用性 =====", flush=True)
+    print(adb("shell", "run-as com.nunofacha.fmcs id 2>&1"))
+    print(adb("shell", "run-as com.nunofacha.fmcs ls -la /data/data/com.nunofacha.fmcs/files/mmkv 2>&1"))
     print("\n[diag] ===== App 数据目录 =====", flush=True)
     print(adb("shell", "run-as com.nunofacha.fmcs ls -R /data/data/com.nunofacha.fmcs 2>&1 | head -40"))
     print("\n[diag] ===== MMKV 内容(strings) =====", flush=True)
