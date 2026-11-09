@@ -73,7 +73,7 @@ def main():
     print("\n[diag] ===== MMKV 内容(strings) =====", flush=True)
     print(adb("shell", "run-as com.nunofacha.fmcs cat /data/data/com.nunofacha.fmcs/files/mmkv/default 2>/dev/null | strings | head -40"))
     print("\n[diag] ===== MMKV 十六进制头 =====", flush=True)
-    print(adb("shell", "run-as com.nunofacha.fmcs dd if=/data/data/com.nunofacha.fmcs/files/mmkv/default bs=1 count=64 2>/dev/null | od -An -tx1 | head -4"))
+    print(adb("shell", "run-as com.nunofacha.fmcs dd if=/data/data/com.nunofacha.fmcs/files/mmkv/default bs=1 count=256 2>/dev/null | od -An -tx1"))
     print("\n[diag] ===== 其它存储文件 =====", flush=True)
     print(adb("shell", "run-as com.nunofacha.fmcs sh -c 'ls -la /data/data/com.nunofacha.fmcs/files /data/data/com.nunofacha.fmcs/shared_prefs 2>&1'"))
     adb("shell", "logcat -d > /sdcard/lc.txt")
