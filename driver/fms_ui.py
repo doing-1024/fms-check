@@ -268,160 +268,270 @@ def guest_api_probe():
     print("[probe] POST2 ->", r.strip()[:220])
 
 
+def foreground():
+    r = adb("shell", "dumpsys window 2>/dev/null | grep -E 'mCurrentFocus|mFocusedApp' | head -2", timeout=30)
+    return r.strip().replace("\n", " | ")
+
+
+def relaunch():
+    adb("shell", f"am force-stop {PKG}")
+    time.sleep(2)
+    adb("shell", f"monkey -p {PKG} -c android.intent.category.LAUNCHER 1")
+    for _ in range(10):
+        time.sleep(3)
+        if app_pid():
+            time.sleep(8)
+            return True
+    return False
+
+
+def is_home(ns):
+    return bool(find(ns, "my servers") or find(ns, "new server") or find(ns, "your servers")
+                or find(ns, "credits", "watch ads"))
+
+
+def is_login(ns):
+    return bool(find(ns, "welcome back", "username", "sign in"))
+
+
+def on_desktop(ns):
+    return bool(find(ns, "predicted app") or find(ns, "sun, nov") or find(ns, "mon, nov")
+                or find(ns, "play store", "gmail", "photos"))
+
+
+def crash_forensics():
+    print("\n[crash] ===== 崩溃/进程事件 =====", flush=True)
+    r = adb("shell",
+            "logcat -d -b all | grep -iE 'nunofacha|am_crash|am_proc_died|am_anr|AndroidRuntime|FATAL' | tail -60",
+            timeout=120)
+    for ln in r.splitlines()[-60:]:
+        print("[crash]", ln[:200], flush=True)
+    print("[crash] ===== 前台窗口 =====", flush=True)
+    print(foreground(), flush=True)
+    print("[crash] pid:", app_pid() or "dead", flush=True)
+
+
+def login_once(dump_prefix="lg"):
+    """填表 + 提交 + 轮询主页; 返回 True 表示进入主页"""
+    dump_ui(f"{dump_prefix}_0")
+    ns = nodes(f"{dump_prefix}_0")
+    if not is_login(ns):
+        print("[login] 当前不在登录页")
+        return is_home(ns)
+    ets = [n for n in ns if "EditText" in n["cls"]]
+    print(f"[login] EditText 数: {len(ets)}")
+    if len(ets) < 2:
+        print("[login] 字段不足, 放弃")
+        return False
+    input_text(ets[0], USER, "f_user", "Username")
+    time.sleep(1)
+    dump_ui("pre_pass")
+    ns2 = nodes("pre_pass")
+    ets2 = [n for n in ns2 if "EditText" in n["cls"]]
+    ok = input_text(ets2[1], PASS, "f_pass", "Password", secure=True) if len(ets2) >= 2 else False
+    print("[login] 密码填入:", ok)
+    time.sleep(0.5)
+    dump_ui("login_ready")
+    shot("login_ready")
+    btn = find(nodes("login_ready"), "sign in")
+    if btn:
+        tap(btn)
+        print("[login] 已提交登录")
+    else:
+        print("[login] 未找到 Sign In")
+        return False
+    for i in range(11):
+        time.sleep(8)
+        tag = f"{dump_prefix}_home{i:02d}"
+        dump_ui(tag)
+        shot(tag)
+        ns = nodes(tag)
+        if is_home(ns) and not is_login(ns):
+            print(f"[login] 主页就绪 (第{i}轮)")
+            summarize(ns, tag)
+            return True
+        if on_desktop(ns):
+            print("[login] 掉到桌面, 拉回前台")
+            adb("shell", f"monkey -p {PKG} -c android.intent.category.LAUNCHER 1")
+            time.sleep(6)
+        if i == 5:
+            b = find(ns, "sign in")
+            if b:
+                print("[login] 补点一次 Sign In")
+                tap(b)
+        summarize(ns, tag)
+    return False
+
+
+def reward_log(pat_kw=r"AdsForCredits|Integrity|PLAY_STORE|claim|Reward|Nonce|nonce|Authorization ID|Device registration|Failed to obtain|Token obtained|credits/|reward/"):
+    out = adb("shell", f"logcat -d -v time | grep -E '{pat_kw}' | grep -vE 'Bugle|Heterodyne|TextClassifier'", timeout=120)
+    return out if out and "[TIMEOUT]" not in out and "[ERR]" not in out else ""
+
+
+def save_reward_log(n=12):
+    txt = reward_log()
+    try:
+        open("reward_log.txt", "w").write(txt)
+    except Exception as e:
+        print("[reward] save failed:", e)
+    for ln in txt.splitlines()[-n:]:
+        print("[js]", ln[:190])
+
+
 def flow_full():
     ns = wait_app()
-    # 登录前先看 guest 网络 + guest 内 HTTP 探针
     net_forensics("pre_login")
-    guest_api_probe()
     logged_in = False
-    if find(ns, "welcome back", "username", "sign in"):
-        print("[flow] 登录页")
-        ets = [n for n in ns if "EditText" in n["cls"]]
-        input_text(ets[0], USER, "f_user", "Username")
-        time.sleep(1)
-        dump_ui("pre_pass")
-        ns2 = nodes("pre_pass")
-        ets2 = [n for n in ns2 if "EditText" in n["cls"]]
-        ok = False
-        if len(ets2) >= 2:
-            ok = input_text(ets2[1], PASS, "f_pass", "Password", secure=True)
-        print("[flow] 密码填入:", ok)
-        time.sleep(0.5)
-        dump_ui("login_ready")
-        shot("login_ready")
-        btn = find(nodes("login_ready"), "sign in")
-        if btn:
-            tap(btn)
-        print("[flow] 已提交登录(第1次), 等 90s 轮询主页...")
-        for i in range(11):
-            time.sleep(8)
-            tag = f"home{i:02d}"
-            dump_ui(tag)
-            shot(tag)
-            save_logcat()
-            save_proxy()
-            ns = nodes(tag)
-            in_launcher = find(ns, "predicted app") or find(ns, "sun, nov")
-            has_home = find(ns, "my servers") or find(ns, "new server") or find(ns, "credits", "free credits")
-            if not find(ns, "welcome back") and not in_launcher and has_home:
-                print(f"[flow] 主页就绪 (第{i}轮)")
+    for attempt in range(2):
+        tag = f"pre_chk{attempt}"
+        dump_ui(tag)
+        ns = nodes(tag)
+        if is_home(ns):
+            logged_in = True
+            break
+        if on_desktop(ns) or not app_pid():
+            print("[flow] App 不在前台/已死, 重新拉起")
+            relaunch()
+            dump_ui(f"{tag}_re")
+            ns = nodes(f"{tag}_re")
+            if is_home(ns):
                 logged_in = True
-                summarize(ns, tag)
                 break
-            if in_launcher:
-                print("[flow] App 掉到桌面, 拉回前台")
-                adb("shell", f"monkey -p {PKG} -c android.intent.category.LAUNCHER 1")
-                time.sleep(5)
-            if i == 3:
-                net_forensics(f"mid_login_{i}")
-            if i == 5:
-                # 只重试一次 Sign In (保护账号不被限流)
-                print("[flow] 60s 未成功, 补点一次 Sign In (最多2次提交)")
-                b = find(ns, "sign in")
-                if b: tap(b)
-            if i == 8:
-                net_forensics(f"late_login_{i}")
+        if is_login(ns):
+            print(f"[flow] 登录页 (第{attempt+1}次尝试)")
+            if login_once(f"try{attempt}"):
+                logged_in = True
+                break
+        else:
             summarize(ns, tag)
-    else:
-        logged_in = True
-    print("[flow] 登录结果:", "OK" if logged_in else "FAILED (已停止重试, 保护账号)")
+    print("[flow] 登录结果:", "OK" if logged_in else "FAILED (已停止, 保护账号)")
     save_logcat()
     save_proxy()
     if not logged_in:
         dump_ui("login_final")
         shot("login_final")
-        print("[flow] 登录未成功, 提前结束 (证据已保存)")
+        crash_forensics()
+        print("[flow] 登录未成功, 提前结束")
         return
-    # ===== 真实流程: 主页 -> Credits tab -> Watch Ads -> Watch Ad & Earn =====
-    def in_launcher(ns_):
-        return find(ns_, "predicted app") is not None or find(ns_, "sun, nov") is not None
 
-    def reward_log(pat_kw='"success"|Integrity|Reward|PLAY_STORE|AdMob|claim|AdsForCredits|Welcome|credits|device|Device|registration|nonce|Nonce|credits'):
-        out = adb("shell", f"logcat -d -v time | grep -E '{pat_kw}'", timeout=120)
-        return out if out and "[TIMEOUT]" not in out and "[ERR]" not in out else ""
+    def go_credits():
+        for i in range(10):
+            tag = f"nav_{i:02d}"
+            dump_ui(tag)
+            shot(tag)
+            ns = nodes(tag)
+            if on_desktop(ns) or not app_pid():
+                print("[nav] 桌面/进程死, 拉回")
+                adb("shell", f"monkey -p {PKG} -c android.intent.category.LAUNCHER 1")
+                time.sleep(6)
+                continue
+            tab = find(ns, "credits")
+            if tab:
+                print("[nav] 点 Credits tab")
+                tap(tab)
+                return True
+            if is_login(ns):
+                print("[nav] 回到登录页, 说明被踢/重启")
+                return False
+            time.sleep(3)
+        return False
 
-    def save_reward_log():
-        txt = reward_log()
-        try:
-            open("reward_log.txt", "w").write(txt)
-        except Exception as e:
-            print("[reward] save failed:", e)
-        for ln in txt.splitlines()[-12:]:
-            print("[js]", ln[:190])
-
-    # 1) 主页 tab -> Credits
-    tab = None
-    for i in range(10):
-        tag = f"nav_{i:02d}"
-        dump_ui(tag); shot(tag)
-        ns = nodes(tag)
-        if in_launcher(ns):
-            print("[nav] 在桌面, 拉回前台")
-            adb("shell", f"monkey -p {PKG} -c android.intent.category.LAUNCHER 1")
-            time.sleep(6); continue
-        tab = find(ns, "credits")
-        if tab:
-            print("[flow] 点 Credits tab")
-            tap(tab); break
-        time.sleep(3)
+    if not go_credits():
+        print("[flow] 未能进入 Credits tab")
+        crash_forensics()
+        return
     time.sleep(6)
-    dump_ui("credits_tab"); shot("credits_tab"); save_reward_log()
-    summarize(nodes("credits_tab"), "credits_tab")
+    dump_ui("credits_tab")
+    shot("credits_tab")
+    save_reward_log()
+    ns = nodes("credits_tab")
+    summarize(ns, "credits_tab")
+    if is_login(ns):
+        print("[flow] 又回到登录页, 尝试重新登录一次")
+        if not login_once("relog"):
+            crash_forensics()
+            return
+        if not go_credits():
+            return
+        time.sleep(6)
+        dump_ui("credits_tab2")
+        shot("credits_tab2")
+        ns = nodes("credits_tab2")
+        summarize(ns, "credits_tab2")
 
-    # 2) Watch Ads for Credits 卡片
-    card = find(nodes("credits_tab"), "watch ads for credits", "watch ads")
+    # Watch Ads for Credits 卡片
+    card = find(ns, "watch ads for credits", "watch ads")
     if card:
         print("[flow] 点 Watch Ads for Credits")
         tap(card)
         time.sleep(8)
-        dump_ui("reward_page"); shot("reward_page"); save_reward_log()
+        dump_ui("reward_page")
+        shot("reward_page")
+        save_reward_log()
         summarize(nodes("reward_page"), "reward_page")
     else:
         print("[flow] 未找到 Watch Ads for Credits 卡片")
+        crash_forensics()
 
-    # 3) Watch Ad & Earn 按钮 (触发 integrity 验证)
-    earn = find(nodes("reward_page") if card else [], "watch ad & earn", "watch ad")
+    earn = find(nodes("reward_page"), "watch ad & earn", "watch ad")
     if earn:
-        print("[flow] 点 Watch Ad & Earn -> 期望进入 Integrity 验证")
+        print("[flow] 点 Watch Ad & Earn -> 应进入 Integrity 验证")
         tap(earn)
     else:
         print("[flow] 未找到 Watch Ad & Earn 按钮")
 
-    # 4) 轮询 integrity / 广告 / claim 全过程, 全程存证据
     seen = set()
     for i in range(24):
         time.sleep(7)
         tag = f"rw_{i:02d}"
-        dump_ui(tag); shot(tag); save_reward_log(); save_proxy()
+        dump_ui(tag)
+        shot(tag)
+        save_reward_log(6)
+        save_proxy()
         ns = nodes(tag)
         tsz = " | ".join([x["text"] for x in ns if x["text"]])[:120]
         print(f"[rw {i}] {tsz}")
-        # 记录 integrity 关键日志
-        txt = reward_log("Authorization ID|Token obtained|Token not obtained|PLAY_STORE_NOT_FOUND|Integrity:|claim|Reward|\"success\"|device")
+        if on_desktop(ns) or not app_pid():
+            print("[rw] 桌面/进程死 -> 取证并尝试拉回")
+            crash_forensics()
+            adb("shell", f"monkey -p {PKG} -c android.intent.category.LAUNCHER 1")
+            time.sleep(8)
+            continue
+        txt = reward_log(r"Authorization ID|Token obtained|Token not obtained|PLAY_STORE|Failed to obtain|claim|Claim|Reward granted|Nonce")
         for ln in txt.splitlines():
-            for key in ("Authorization ID", "Token obtained", "Token not obtained",
-                        "PLAY_STORE_NOT_FOUND", "claim", "Claim", "Reward granted"):
-                if key in ln and ln[16:] not in seen:
-                    seen.add(ln[16:]); print("[js*]", ln[:190])
-        # 关闭广告 (全屏 activity / 关闭按钮)
+            k = ln[18:]
+            if k in seen:
+                continue
+            for key in ("Authorization ID", "Token obtained", "Token not obtained", "PLAY_STORE",
+                        "Failed to obtain", "claim", "Claim", "Reward granted", "Nonce"):
+                if key in ln:
+                    seen.add(k)
+                    print("[js*]", ln[:190])
+                    break
         close = None
         for m in ns:
             hay = (m["text"] + " " + m["desc"]).lower()
-            if any(k in hay for k in ("close", "关闭", "skip", "×", "dismiss")) and m["box"][2] - m["box"][0] < 200:
-                close = m; break
+            if any(k in hay for k in ("close", "skip", "dismiss", "×")) and m["box"][2] - m["box"][0] < 200:
+                close = m
+                break
         if close:
             print("[flow] 点广告关闭")
-            tap(close); time.sleep(5); continue
-        # 广告结束后回到 reward 页, 继续点 Watch Ad & Earn (每日 35 次)
+            tap(close)
+            time.sleep(5)
+            continue
         if find(ns, "watch ad & earn") and i > 3:
-            print("[flow] 回到 reward 页, 再点一次 Watch Ad & Earn")
+            print("[flow] 回到 reward 页, 再点 Watch Ad & Earn")
             b = find(ns, "watch ad & earn")
-            tap(b); time.sleep(3)
+            tap(b)
+            time.sleep(3)
         if find(ns, "failed to obtain integrity"):
-            print("[flow] !! Integrity 失败: 设备无法签发 Play Integrity token")
+            print("[flow] !! Integrity 失败 (无法签发 token)")
             break
-
-    dump_ui("final"); shot("final"); save_reward_log(); save_logcat()
+    dump_ui("final")
+    shot("final")
+    save_reward_log(20)
+    save_logcat()
+    crash_forensics()
     print("[flow] 完成")
 
 
