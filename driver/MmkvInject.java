@@ -1,6 +1,6 @@
 import com.sun.jdi.Bootstrap;
-import com.sun.jdi.ClassLoaderReference;
 import com.sun.jdi.ClassType;
+import com.sun.jdi.Location;
 import com.sun.jdi.Method;
 import com.sun.jdi.ObjectReference;
 import com.sun.jdi.ReferenceType;
@@ -10,33 +10,25 @@ import com.sun.jdi.Value;
 import com.sun.jdi.VirtualMachine;
 import com.sun.jdi.connect.AttachingConnector;
 import com.sun.jdi.connect.Connector;
+import com.sun.jdi.event.BreakpointEvent;
+import com.sun.jdi.event.Event;
+import com.sun.jdi.event.EventQueue;
+import com.sun.jdi.request.BreakpointRequest;
+import com.sun.jdi.request.EventRequestManager;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 
 /**
- * 通过 JDWP 在 App 进程内调用 com.ammarahmed.mmkv.MMKV.encode(key, value)
+ * 通过 JDWP 在 App 进程内调用 com.ammarahmed.mmkv.MMKV 写入 key/value。
+ * ART 只允许在断点事件上下文里执行方法调用, 所以在 android.util.Log.println 下断点,
+ * 命中后再调 MMKV.mmkvWithID / encode / decodeString。
+ *
  * 用法: java MmkvInject <host> <port> <mmkvID> <rootDir> <key> <value>
  */
 public class MmkvInject {
-    static ThreadReference pickThread(VirtualMachine vm) {
-        ThreadReference r = null;
-        List<ThreadReference> all = new ArrayList<>(vm.allThreads());
-        for (ThreadReference t : all) {
-            if ("main".equals(t.name())) { r = t; break; }
-        }
-        if (r == null && !all.isEmpty()) r = all.get(0);
-        if (r == null) throw new RuntimeException("no thread");
-        try {
-            r.suspend();
-        } catch (Exception e) {
-            System.out.println("[jdi] thread.suspend 失败: " + e);
-        }
-        System.out.println("[jdi] picked " + r.name() + " suspended=" + r.isSuspended()
-                           + " count=" + (r.isSuspended() ? r.suspendCount() : -1));
-        return r;
-    }
+    static final String TARGET = "com.ammarahmed.mmkv.MMKV";
 
     public static void main(String[] argv) throws Exception {
         String host = argv[0];
@@ -53,62 +45,54 @@ public class MmkvInject {
         cargs.get("port").setValue(String.valueOf(port));
         if (cargs.containsKey("timeout")) cargs.get("timeout").setValue("30000");
         VirtualMachine vm = conn.attach(cargs);
-        ThreadReference thread0 = null;
-        try {
-            List<ReferenceType> types = vm.classesByName("com.ammarahmed.mmkv.MMKV");
-            for (int i = 0; i < 12 && types.isEmpty(); i++) {
-                Thread.sleep(5000);
-                types = vm.classesByName("com.ammarahmed.mmkv.MMKV");
-            }
-            if (types.isEmpty()) {
-                System.out.println("[jdi] 类未加载，用 App classloader 强制 Class.forName");
-                List<ReferenceType> mods = vm.classesByName("com.ammarahmed.mmkv.RNMMKVModule");
-                if (mods.isEmpty()) throw new RuntimeException("RNMMKVModule 也未加载，无法取得 classloader");
-                ClassLoaderReference loader = ((ClassType) mods.get(0)).classLoader();
-                ClassType classCls = (ClassType) vm.classesByName("java.lang.Class").get(0);
-                Method forName3 = null;
-                for (Method m : classCls.methodsByName("forName")) {
-                    if (m.argumentTypeNames().equals(Arrays.asList(
-                            "java.lang.String", "boolean", "java.lang.ClassLoader"))) {
-                        forName3 = m;
-                    }
-                }
-                if (forName3 == null) throw new RuntimeException("Class.forName(String,boolean,ClassLoader) 未找到");
-                List<Value> fa0 = new ArrayList<>();
-                fa0.add(vm.mirrorOf("com.ammarahmed.mmkv.MMKV"));
-                fa0.add(vm.mirrorOf(true));
-                fa0.add(loader);
-                thread0 = pickThread(vm);
-                Value loaded = classCls.invokeMethod(thread0, forName3, fa0, ObjectReference.INVOKE_SINGLE_THREADED);
-                System.out.println("[jdi] forName -> " + loaded);
-                types = vm.classesByName("com.ammarahmed.mmkv.MMKV");
-            }
-            System.out.println("[jdi] class loaded: " + types.size());
-            if (types.isEmpty()) {
-                for (ReferenceType t : vm.allClasses()) {
-                    if (t.name().contains("mmkv") || t.name().contains("MMKV")) System.out.println("[jdi] loaded: " + t.name());
-                }
-                throw new RuntimeException("MMKV class not loaded in target process");
-            }
-            ClassType ct = (ClassType) types.get(0);
-            thread0 = pickThread(vm);
-            ThreadReference thread = thread0;
-            System.out.println("[jdi] thread=" + thread.name());
+        System.out.println("[jdi] attached");
 
-            // 平凡调用测试: java.lang.String.valueOf(int)
-            try {
-                ClassType strCls = (ClassType) vm.classesByName("java.lang.String").get(0);
-                Method vof = null;
-                for (Method m : strCls.methodsByName("valueOf")) {
-                    if (m.argumentTypeNames().equals(Arrays.asList("int"))) vof = m;
+        EventRequestManager erm = vm.eventRequestManager();
+        BreakpointRequest bp = null;
+        try {
+            List<ReferenceType> logs = vm.classesByName("android.util.Log");
+            if (logs.isEmpty()) throw new RuntimeException("android.util.Log not loaded");
+            ClassType logCls = (ClassType) logs.get(0);
+            Method target = null;
+            for (Method m : logCls.methodsByName("println")) {
+                if (m.argumentTypeNames().equals(Arrays.asList("int", "java.lang.String", "java.lang.String"))) {
+                    target = m;
                 }
-                List<Value> ta = new ArrayList<>();
-                ta.add(vm.mirrorOf(7));
-                Value tv = strCls.invokeMethod(thread, vof, ta, ObjectReference.INVOKE_SINGLE_THREADED);
-                System.out.println("[jdi] trivial invoke ok: valueOf(7)=" + tv);
-            } catch (Exception e) {
-                System.out.println("[jdi] trivial invoke FAILED: " + e.getClass().getName() + ": " + e.getMessage());
             }
+            if (target == null) throw new RuntimeException("Log.println(int,String,String) not found");
+            Location loc = target.location();
+            bp = erm.createBreakpointRequest(loc);
+            bp.setSuspendPolicy(BreakpointRequest.SUSPEND_EVENT_THREAD);
+            bp.enable();
+            System.out.println("[jdi] breakpoint at " + loc);
+
+            ThreadReference thread = null;
+            EventQueue q = vm.eventQueue();
+            long deadline = System.currentTimeMillis() + 90000;
+            while (System.currentTimeMillis() < deadline && thread == null) {
+                Event ev = q.remove(2000);
+                if (ev == null) continue;
+                if (ev instanceof BreakpointEvent) {
+                    thread = ((BreakpointEvent) ev).thread();
+                    System.out.println("[jdi] breakpoint hit thread=" + thread.name()
+                            + " suspended=" + thread.isSuspended());
+                    continue;
+                }
+                vm.resume();
+            }
+            if (thread == null) throw new RuntimeException("no breakpoint hit in 90s");
+
+            bp.disable();
+            erm.deleteEventRequest(bp);
+            bp = null;
+
+            ClassType ct = null;
+            for (int i = 0; i < 12 && ct == null; i++) {
+                List<ReferenceType> t = vm.classesByName(TARGET);
+                if (!t.isEmpty()) ct = (ClassType) t.get(0);
+                else Thread.sleep(2000);
+            }
+            if (ct == null) throw new RuntimeException("MMKV class not loaded");
 
             Method factory = null;
             for (Method m : ct.methodsByName("mmkvWithID")) {
@@ -122,20 +106,8 @@ public class MmkvInject {
             fa.add(vm.mirrorOf(mmkvId));
             fa.add(vm.mirrorOf(1));
             fa.add(vm.mirrorOf(root));
-            ObjectReference inst = null;
-            try {
-                inst = (ObjectReference) ct.invokeMethod(thread, factory, fa, ObjectReference.INVOKE_SINGLE_THREADED);
-            } catch (Exception e) {
-                System.out.println("[jdi] mmkvWithID inv fail: " + e.getClass().getName() + ": " + e.getMessage());
-                try {
-                    inst = (ObjectReference) ct.invokeMethod(thread, factory, fa,
-                            ObjectReference.INVOKE_SINGLE_THREADED | ObjectReference.INVOKE_NONVIRTUAL);
-                    System.out.println("[jdi] NONVIRTUAL retry ok");
-                } catch (Exception e2) {
-                    System.out.println("[jdi] NONVIRTUAL retry fail: " + e2.getClass().getName() + ": " + e2.getMessage());
-                    throw e;
-                }
-            }
+            ObjectReference inst = (ObjectReference) ct.invokeMethod(thread, factory, fa,
+                    ObjectReference.INVOKE_SINGLE_THREADED);
             System.out.println("[jdi] instance: " + inst);
 
             Method encode = null;
@@ -150,9 +122,8 @@ public class MmkvInject {
             ea.add(vm.mirrorOf(key));
             ea.add(vm.mirrorOf(value));
             Value r = inst.invokeMethod(thread, encode, ea, ObjectReference.INVOKE_SINGLE_THREADED);
-            System.out.println("[jdi] encode result: " + r);
+            System.out.println("[jdi] encode -> " + r);
 
-            // 回读确认
             Method decode = null;
             for (Method m : ct.methodsByName("decodeString")) {
                 if (m.argumentTypeNames().equals(Arrays.asList("java.lang.String", "java.lang.String"))) {
@@ -169,6 +140,7 @@ public class MmkvInject {
                 System.out.println("[jdi] readback " + key + " = " + s);
             }
         } finally {
+            try { if (bp != null) bp.disable(); } catch (Exception ignore) {}
             try { vm.resume(); } catch (Exception ignore) {}
             try { vm.dispose(); } catch (Exception ignore) {}
         }
