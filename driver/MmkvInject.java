@@ -70,15 +70,18 @@ public class MmkvInject {
             EventQueue q = vm.eventQueue();
             long deadline = System.currentTimeMillis() + 90000;
             while (System.currentTimeMillis() < deadline && thread == null) {
-                Event ev = q.remove(2000);
-                if (ev == null) continue;
-                if (ev instanceof BreakpointEvent) {
-                    thread = ((BreakpointEvent) ev).thread();
-                    System.out.println("[jdi] breakpoint hit thread=" + thread.name()
-                            + " suspended=" + thread.isSuspended());
-                    continue;
+                com.sun.jdi.event.EventSet es = q.remove(2000);
+                if (es == null) continue;
+                boolean hit = false;
+                for (Event ev : es) {
+                    if (ev instanceof BreakpointEvent) {
+                        thread = ((BreakpointEvent) ev).thread();
+                        System.out.println("[jdi] breakpoint hit thread=" + thread.name()
+                                + " suspended=" + thread.isSuspended());
+                        hit = true;
+                    }
                 }
-                vm.resume();
+                if (!hit) es.resume();
             }
             if (thread == null) throw new RuntimeException("no breakpoint hit in 90s");
 
