@@ -21,14 +21,13 @@ import java.util.Map;
  */
 public class MmkvInject {
     static ThreadReference pickThread(VirtualMachine vm) {
-        ThreadReference main = null, any = null;
-        for (ThreadReference t : vm.allThreads()) {
-            if (!t.isSuspended()) continue;
-            if (any == null) any = t;
-            if ("main".equals(t.name())) { main = t; break; }
+        ThreadReference r = null;
+        List<ThreadReference> all = new ArrayList<>(vm.allThreads());
+        for (ThreadReference t : all) {
+            if ("main".equals(t.name())) { r = t; break; }
         }
-        ThreadReference r = (main != null) ? main : any;
-        if (r == null) throw new RuntimeException("no suspended thread");
+        if (r == null && !all.isEmpty()) r = all.get(0);
+        if (r == null) throw new RuntimeException("no thread");
         try {
             r.suspend();
         } catch (Exception e) {
@@ -54,7 +53,7 @@ public class MmkvInject {
         cargs.get("port").setValue(String.valueOf(port));
         if (cargs.containsKey("timeout")) cargs.get("timeout").setValue("30000");
         VirtualMachine vm = conn.attach(cargs);
-        ThreadReference thread0 = pickThread(vm);
+        ThreadReference thread0 = null;
         try {
             List<ReferenceType> types = vm.classesByName("com.ammarahmed.mmkv.MMKV");
             for (int i = 0; i < 12 && types.isEmpty(); i++) {
@@ -79,6 +78,7 @@ public class MmkvInject {
                 fa0.add(vm.mirrorOf("com.ammarahmed.mmkv.MMKV"));
                 fa0.add(vm.mirrorOf(true));
                 fa0.add(loader);
+                thread0 = pickThread(vm);
                 Value loaded = classCls.invokeMethod(thread0, forName3, fa0, ObjectReference.INVOKE_SINGLE_THREADED);
                 System.out.println("[jdi] forName -> " + loaded);
                 types = vm.classesByName("com.ammarahmed.mmkv.MMKV");
