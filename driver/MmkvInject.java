@@ -95,6 +95,21 @@ public class MmkvInject {
             ThreadReference thread = thread0;
             System.out.println("[jdi] thread=" + thread.name());
 
+            // 平凡调用测试: java.lang.String.valueOf(int)
+            try {
+                ClassType strCls = (ClassType) vm.classesByName("java.lang.String").get(0);
+                Method vof = null;
+                for (Method m : strCls.methodsByName("valueOf")) {
+                    if (m.argumentTypeNames().equals(Arrays.asList("int"))) vof = m;
+                }
+                List<Value> ta = new ArrayList<>();
+                ta.add(vm.mirrorOf(7));
+                Value tv = thread.invokeMethod(vof, ta, ObjectReference.INVOKE_SINGLE_THREADED);
+                System.out.println("[jdi] trivial invoke ok: valueOf(7)=" + tv);
+            } catch (Exception e) {
+                System.out.println("[jdi] trivial invoke FAILED: " + e.getClass().getName() + ": " + e.getMessage());
+            }
+
             Method factory = null;
             for (Method m : ct.methodsByName("mmkvWithID")) {
                 if (m.argumentTypeNames().equals(Arrays.asList("java.lang.String", "int", "java.lang.String"))) {
@@ -107,7 +122,20 @@ public class MmkvInject {
             fa.add(vm.mirrorOf(mmkvId));
             fa.add(vm.mirrorOf(1));
             fa.add(vm.mirrorOf(root));
-            ObjectReference inst = (ObjectReference) ct.invokeMethod(thread, factory, fa, ObjectReference.INVOKE_SINGLE_THREADED);
+            ObjectReference inst = null;
+            try {
+                inst = (ObjectReference) ct.invokeMethod(thread, factory, fa, ObjectReference.INVOKE_SINGLE_THREADED);
+            } catch (Exception e) {
+                System.out.println("[jdi] mmkvWithID inv fail: " + e.getClass().getName() + ": " + e.getMessage());
+                try {
+                    inst = (ObjectReference) ct.invokeMethod(thread, factory, fa,
+                            ObjectReference.INVOKE_SINGLE_THREADED | ObjectReference.INVOKE_NONVIRTUAL);
+                    System.out.println("[jdi] NONVIRTUAL retry ok");
+                } catch (Exception e2) {
+                    System.out.println("[jdi] NONVIRTUAL retry fail: " + e2.getClass().getName() + ": " + e2.getMessage());
+                    throw e;
+                }
+            }
             System.out.println("[jdi] instance: " + inst);
 
             Method encode = null;

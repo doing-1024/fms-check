@@ -96,6 +96,11 @@ def main():
     print(adb("shell", f"run-as {PKG} ls -la {MMKV_ROOT} 2>&1"))
     print(adb("shell", f"run-as {PKG} cat {MMKV_ROOT}/default 2>/dev/null | strings | head -20"))
 
+    for fn in ("default", "default.crc", "mmkvIDStore", "mmkvIDStore.crc"):
+        b64 = adb("shell", f"run-as {PKG} cat {MMKV_ROOT}/{fn} 2>/dev/null | base64")
+        print(f"\n[mmkv-b64] {fn}", flush=True)
+        print(b64.replace("\n", "").strip()[:6000], flush=True)
+
     print("\n[probe] ===== 重启 App 后日志 =====", flush=True)
     adb("shell", f"am force-stop {PKG}")
     adb("logcat", "-c")
