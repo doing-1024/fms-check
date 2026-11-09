@@ -38,38 +38,20 @@ def javabin(name):
     return name
 
 
-STUB_SRC = """package com.ammarahmed.mmkv;
-public class MMKV {
-    public static MMKV mmkvWithID(String id, int mode, String root) { return null; }
-    public static MMKV mmkvWithID(String id, int mode) { return null; }
-    public boolean encode(String k, String v) { return false; }
-}
-"""
-
-
-def build_stub():
-    os.makedirs("/tmp/stub/com/ammarahmed/mmkv", exist_ok=True)
-    src = "/tmp/stub/com/ammarahmed/mmkv/MMKV.java"
-    with open(src, "w") as f:
-        f.write(STUB_SRC)
-    r = subprocess.run([javabin("javac"), "-d", "/tmp/stub", src], capture_output=True, text=True)
-    print("[stub] javac:", (r.stdout or "") + (r.stderr or "") or "ok", flush=True)
-    return "/tmp/stub"
-
-
-def jdb_eval(pid, expr):
+def jdi_inject(pid, key, value):
     adb("forward", "tcp:8700", f"jdwp:{pid}")
-    cp = build_stub()
-    script = f"suspend\nprint {expr}\nresume\nexit\n"
-    print(f"[jdb] pid={pid} expr={expr[:90]}", flush=True)
+    src = os.path.join(os.path.dirname(os.path.abspath(__file__)), "MmkvInject.java")
+    r = subprocess.run([javabin("javac"), "-d", "/tmp/jdi", src], capture_output=True, text=True)
+    print("[jdi] javac:", ((r.stdout or "") + (r.stderr or "")).strip() or "ok", flush=True)
     try:
-        r = subprocess.run([javabin("jdb"), "-classpath", cp, "-attach", "localhost:8700"],
-                           input=script, capture_output=True, text=True, timeout=180)
+        r = subprocess.run([javabin("java"), "-classpath", "/tmp/jdi", "MmkvInject",
+                            "localhost", "8700", "default", MMKV_ROOT, key, value],
+                           capture_output=True, text=True, timeout=180)
         out = (r.stdout or "") + (r.stderr or "")
     except Exception as e:
-        out = f"[jdb ERR] {e}"
-    for line in out.splitlines()[-18:]:
-        print("[jdb]", line[:200], flush=True)
+        out = f"[jdi ERR] {e}"
+    for line in out.splitlines()[-25:]:
+        print("[jdi]", line[:220], flush=True)
     return out
 
 
@@ -92,14 +74,13 @@ def main():
         return
 
     print("\n[probe] ===== 写入前 mmkv =====", flush=True)
-    print(adb("shell", f"run-as {PKG} ls -la {MMKV_ROOT} 2>&1"))
+    print(adb("shell", f"run-as {PKG} ls -laR /data/data/{PKG}/files 2>&1 | head -30"))
     print(adb("shell", f"run-as {PKG} cat {MMKV_ROOT}/default 2>/dev/null | strings | head -20"))
 
-    expr = (f'com.ammarahmed.mmkv.MMKV.mmkvWithID("default", 1, "{MMKV_ROOT}")'
-            f'.encode("deviceId", "{DEV_ID}")')
-    jdb_eval(pid, expr)
+    jdi_inject(pid, "deviceId", DEV_ID)
 
     print("\n[probe] ===== 写入后 mmkv =====", flush=True)
+    print(adb("shell", f"run-as {PKG} ls -la {MMKV_ROOT} 2>&1"))
     print(adb("shell", f"run-as {PKG} cat {MMKV_ROOT}/default 2>/dev/null | strings | head -20"))
 
     print("\n[probe] ===== 重启 App 后日志 =====", flush=True)
