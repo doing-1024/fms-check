@@ -1,4 +1,5 @@
 import com.sun.jdi.Bootstrap;
+import com.sun.jdi.ClassLoaderReference;
 import com.sun.jdi.ClassType;
 import com.sun.jdi.Method;
 import com.sun.jdi.ObjectReference;
@@ -35,21 +36,48 @@ public class MmkvInject {
         if (cargs.containsKey("timeout")) cargs.get("timeout").setValue("30000");
         VirtualMachine vm = conn.attach(cargs);
         vm.suspend();
+        ThreadReference thread0 = null;
+        for (ThreadReference t : vm.allThreads()) {
+            if (t.isSuspended()) { thread0 = t; break; }
+        }
+        if (thread0 == null) throw new RuntimeException("no suspended thread");
         try {
             List<ReferenceType> types = vm.classesByName("com.ammarahmed.mmkv.MMKV");
+            for (int i = 0; i < 12 && types.isEmpty(); i++) {
+                Thread.sleep(5000);
+                types = vm.classesByName("com.ammarahmed.mmkv.MMKV");
+            }
+            if (types.isEmpty()) {
+                System.out.println("[jdi] 类未加载，用 App classloader 强制 Class.forName");
+                List<ReferenceType> mods = vm.classesByName("com.ammarahmed.mmkv.RNMMKVModule");
+                if (mods.isEmpty()) throw new RuntimeException("RNMMKVModule 也未加载，无法取得 classloader");
+                ClassLoaderReference loader = ((ClassType) mods.get(0)).classLoader();
+                ClassType classCls = (ClassType) vm.classesByName("java.lang.Class").get(0);
+                Method forName3 = null;
+                for (Method m : classCls.methodsByName("forName")) {
+                    if (m.argumentTypeNames().equals(Arrays.asList(
+                            "java.lang.String", "boolean", "java.lang.ClassLoader"))) {
+                        forName3 = m;
+                    }
+                }
+                if (forName3 == null) throw new RuntimeException("Class.forName(String,boolean,ClassLoader) 未找到");
+                List<Value> fa0 = new ArrayList<>();
+                fa0.add(vm.mirrorOf("com.ammarahmed.mmkv.MMKV"));
+                fa0.add(vm.mirrorOf(true));
+                fa0.add(loader);
+                Value loaded = classCls.invokeMethod(thread0, forName3, fa0, ObjectReference.INVOKE_SINGLE_THREADED);
+                System.out.println("[jdi] forName -> " + loaded);
+                types = vm.classesByName("com.ammarahmed.mmkv.MMKV");
+            }
             System.out.println("[jdi] class loaded: " + types.size());
             if (types.isEmpty()) {
                 for (ReferenceType t : vm.allClasses()) {
-                    if (t.name().contains("mmkv")) System.out.println("[jdi] loaded-candidate: " + t.name());
+                    if (t.name().contains("mmkv") || t.name().contains("MMKV")) System.out.println("[jdi] loaded: " + t.name());
                 }
                 throw new RuntimeException("MMKV class not loaded in target process");
             }
             ClassType ct = (ClassType) types.get(0);
-            ThreadReference thread = null;
-            for (ThreadReference t : vm.allThreads()) {
-                if (t.isSuspended()) { thread = t; break; }
-            }
-            if (thread == null) throw new RuntimeException("no suspended thread");
+            ThreadReference thread = thread0;
 
             Method factory = null;
             for (Method m : ct.methodsByName("mmkvWithID")) {
