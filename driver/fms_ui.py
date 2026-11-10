@@ -33,7 +33,8 @@ except Exception as _e:  # pragma: no cover
 
 def adb(*args, timeout=90):
     try:
-        r = subprocess.run(["adb", *args], capture_output=True, text=True, timeout=timeout)
+        r = subprocess.run(["adb", *args], capture_output=True, text=True, timeout=timeout,
+                           stderr=subprocess.STDOUT)
         return r.stdout
     except subprocess.TimeoutExpired:
         print(f"[adb] TIMEOUT: {' '.join(args[:3])}")
@@ -1111,17 +1112,28 @@ def vend_mode():
     print("[vend] vending apk:", v, flush=True)
     if not v:
         return False
+    print("[vend] disable-verity:", adb("disable-verity", timeout=180).strip()[:150], flush=True)
+    adb("reboot", timeout=60)
+    time.sleep(12)
+    for _ in range(30):
+        time.sleep(5)
+        if adb("shell", "getprop", "sys.boot_completed", timeout=30).strip() == "1":
+            break
+    print("[vend] root:", adb("root", timeout=60).strip()[:80], flush=True)
+    time.sleep(4)
+    for _ in range(6):
+        if adb_root_ok():
+            break
+        time.sleep(3)
+    print("[vend] remount:", adb("remount", timeout=300).strip().replace("\n", " | ")[:300],
+          flush=True)
+    print("[vend] rm stub:", adb("shell", "rm -rf /product/app/LicenseChecker /system/app/LicenseChecker;"
+                                        " ls /product/app/LicenseChecker 2>&1 | head -2",
+                                 timeout=120).strip()[:160], flush=True)
     print("[vend] verifier off:", adb("shell", "settings put global verifier_verify_adb_installs 0; "
                                        "settings put global package_verifier_enable 0",
                                      timeout=60).strip()[:80], flush=True)
-    print("[vend] stub path:", adb("shell", "pm path com.android.vending", timeout=60).strip()[:120],
-          flush=True)
-    print("[vend] uninstall stub:", adb("uninstall", "com.android.vending", timeout=180).strip()[:160],
-          flush=True)
-    print("[vend] rm stub:", adb("shell", "rm -rf /product/app/LicenseChecker/*.apk /data/app/*vending* "
-                                        "*/*/*vending* 2>/dev/null; echo done", timeout=120).strip()[:100],
-          flush=True)
-    print("[vend] install:", adb("install", "-r", "-g", "-d", v, timeout=1200).strip()[:400],
+    print("[vend] install:", adb("install", "-r", "-g", "-d", v, timeout=900).strip()[:500],
           flush=True)
     print("[vend] pm path:", adb("shell", "pm path com.android.vending", timeout=60).strip()[:150],
           flush=True)
