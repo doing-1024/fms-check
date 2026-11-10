@@ -161,19 +161,31 @@ def setup_root_jdwp():
         print("[root] jdwp prop =", adb("shell", "getprop",
                                        "persist.debug.dalvik.vm.jdwp.enabled").strip(), flush=True)
         return True
-    print("[root] -prop 无效, 改补丁镜像后重启", flush=True)
+    print("[root] -prop 无效, 检查 sysdir 的 build.prop / VerifiedBootParams", flush=True)
+    sd = emu_image_dir()
+    bp = os.path.join(sd, "build.prop")
+    vbp = os.path.join(sd, "VerifiedBootParams.textproto")
+    print("[root] sysdir build.prop:", sh_out(["grep", "-nE", "debuggable|secure|build.type", bp])[:400],
+          flush=True)
+    print("[root] VerifiedBootParams:", sh_out(["cat", vbp])[:1200], flush=True)
+    print("[root] sysdir data dir:", sh_out(["bash", "-lc",
+                                            f"ls -la {sd}/data | head -20"])[:600], flush=True)
+    # 尝试 1: 在 sysdir build.prop 里强制 ro.debuggable=1
+    sh_out(["bash", "-lc", f"grep -q '^ro.debuggable=0' {bp} && sed -i "
+                          f"'s/^ro.debuggable=0/ro.debuggable=1/' {bp}; "
+                          f"grep -q '^ro.debuggable' {bp} || echo ro.debuggable=1 >> {bp}"])
+    print("[root] pw build.prop:", sh_out(["grep", "-nE", "debuggable", bp])[:300], flush=True)
     stop_emu()
-    ok = patch_images(emu_image_dir())
     boot_emu([], tag="emu3")
     for k in ("ro.debuggable", "ro.secure", "ro.build.type"):
-        print(f"[root] after patch getprop {k} =",
+        print(f"[root] after prop-file getprop {k} =",
               adb("shell", "getprop", k, timeout=30).strip(), flush=True)
     print("[root] adb root ->", adb("root", timeout=30).strip(), flush=True)
-    for i in range(10):
+    for i in range(8):
         time.sleep(3)
         if adb_root_ok():
             adb("shell", "setprop", "persist.debug.dalvik.vm.jdwp.enabled", "1")
-            print("[root] patch 生效, root OK, jdwp prop =", adb(
+            print("[root] build.prop 生效 root OK, jdwp =", adb(
                 "shell", "getprop", "persist.debug.dalvik.vm.jdwp.enabled").strip(), flush=True)
             return True
     print("[root] patch 无效 (hit=", ok, ") dump 诊断", flush=True)
