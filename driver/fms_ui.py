@@ -897,7 +897,7 @@ GA_REL = "system-images/android-34/google_apis/x86_64/"
 
 
 def gpt_parts(path):
-    """返回 GPT 第一分区的 (start_lba, end_lba)；系统镜像是整块 GPT 盘。"""
+    """解析 GPT 全部分区：返回 [(start_lba, end_lba, name)]。"""
     parts = []
     try:
         with open(path, "rb") as f:
@@ -905,15 +905,18 @@ def gpt_parts(path):
             hdr = f.read(92)
             if hdr[:8] != b"EFI PART":
                 return parts
+            ent_lba = int.from_bytes(hdr[72:80], "little")
             nent = int.from_bytes(hdr[80:84], "little")
-            f.seek(1024)
-            ent = f.read(128 * min(nent, 8))
-            for i in range(min(nent, 8)):
-                e = ent[i * 128:(i + 1) * 128]
-                if e[0:16] == b"\x00" * 16:
+            esz = int.from_bytes(hdr[84:88], "little") or 128
+            f.seek(ent_lba * 512)
+            raw = f.read(esz * min(nent, 64))
+            for i in range(min(nent, 64)):
+                e = raw[i * esz:(i + 1) * esz]
+                if len(e) < 128 or e[0:16] == b"\x00" * 16:
                     continue
+                name = e[56:128].decode("utf-16-le", "ignore").rstrip("\x00") if len(e) >= 128 else ""
                 parts.append((int.from_bytes(e[32:40], "little"),
-                              int.from_bytes(e[40:48], "little")))
+                              int.from_bytes(e[40:48], "little"), name))
     except Exception as ex:
         print("[gpt] err", ex, flush=True)
     return parts
@@ -936,50 +939,48 @@ def find_fs_offset(path, scan=64 * 1024 * 1024):
     return None, 0
 
 
-def extract_vending_from_playstore_image():
-    """在全盘镜像里定位 fs 分区 -> 挂载 -> 取 Vending.apk。"""
-    mnt = "/tmp/psimg"
-    os.makedirs(mnt, exist_ok=True)
-    for name in ("system.img", "vendor.img", "product.img"):
-        img = os.path.join(emu_image_dir(), name)
-        if not os.path.exists(img):
-            continue
-        fstype, off = find_fs_offset(img)
-        print(f"[vending] {name}: fstype={fstype} offset={off} gpt={gpt_parts(img)}", flush=True)
-        if not fstype:
-            continue
+def try_mount_partition(img, off, mnt):
+    for fstype in ("ext4", "erofs", "f2fs"):
         sh_out(["sudo", "umount", "-f", mnt])
         out = sh_out(["sudo", "mount", "-t", fstype, "-o", f"loop,ro,offset={off}", img, mnt],
                      timeout=240)
-        if sh_out(["mountpoint", mnt]).find("is a mountpoint") < 0:
-            print("[vending] mount failed:", out[:160], flush=True)
+        if sh_out(["mountpoint", mnt]).find("is a mountpoint") >= 0:
+            return fstype
+    return ""
+
+
+def extract_vending_from_playstore_image():
+    """遍历镜像 GPT 分区，逐个尝试挂载，找 Play Store 的 apk。"""
+    mnt = "/tmp/psimg"
+    os.makedirs(mnt, exist_ok=True)
+    for name in ("system.img", "vendor.img", "product.img", "system_ext.img"):
+        img = os.path.join(emu_image_dir(), name)
+        if not os.path.exists(img):
             continue
-        print(f"[vending] mounted {name} as {fstype} @ {off} ✓", flush=True)
-        print("[vending] ls:", sh_out(["sudo", "bash", "-lc", f"ls {mnt}"]).replace("\n", " ")[:400],
-              flush=True)
-        print("[vending] priv-app:", sh_out(
-            ["sudo", "bash", "-lc", f"ls {mnt}/priv-app {mnt}/product/priv-app "
-                                    f"{mnt}/system_ext/priv-app 2>/dev/null"]).replace("\n", " ")[:600],
-            flush=True)
-        print("[vending] apk count:", sh_out(
-            ["sudo", "bash", "-lc", f"find {mnt} -name '*.apk' 2>/dev/null | wc -l"]).strip(),
-            flush=True)
-        print("[vending] apk sample:", sh_out(
-            ["sudo", "bash", "-lc", f"find {mnt} -name '*.apk' 2>/dev/null | head -12"]
-        ).replace("\n", " ")[:700], flush=True)
-        found = sh_out(["sudo", "bash", "-lc",
-                        f"find {mnt} -iname '*vending*' -o -iname '*Phonesky*' 2>/dev/null "
-                        f"| head -5"])
-        print("[vending] found:", found[:400], flush=True)
-        if found.strip():
-            first = found.strip().splitlines()[0]
-            sh_out(["sudo", "cp", first, "/tmp/Vending.apk"])
-            sh_out(["sudo", "chmod", "644", "/tmp/Vending.apk"])
-            print("[vending] size:", os.path.getsize("/tmp/Vending.apk"), flush=True)
+        parts = gpt_parts(img)
+        print(f"[vending] {name} partitions:", [(a, b, n) for a, b, n in parts], flush=True)
+        cands = [(a * 512) for a, b, n in parts]
+        fstype, off = find_fs_offset(img)
+        if fstype:
+            cands.insert(0, off)
+        for off in dict.fromkeys(cands):
+            mt = try_mount_partition(img, off, mnt)
+            if not mt:
+                continue
+            print(f"[vending] {name} mounted {mt} @ {off} ✓", flush=True)
+            apks = sh_out(["sudo", "bash", "-lc", f"find {mnt} -name '*.apk' 2>/dev/null"])
+            hit = [a for a in apks.splitlines() if "ending" in a.lower() or "phonesky" in a.lower()
+                   or "play" in a.lower().split("/")[-1]]
+            print("[vending] apk total:", len(apks.splitlines()), "hits:", hit[:6], flush=True)
+            if hit:
+                sh_out(["sudo", "cp", hit[0], "/tmp/Vending.apk"])
+                sh_out(["sudo", "chmod", "644", "/tmp/Vending.apk"])
+                print("[vending] size:", os.path.getsize("/tmp/Vending.apk"), flush=True)
+                sh_out(["sudo", "umount", "-f", mnt])
+                return "/tmp/Vending.apk"
+            print("[vending] ls:", sh_out(["sudo", "bash", "-lc", f"ls {mnt}"]
+                                          ).replace("\n", " ")[:300], flush=True)
             sh_out(["sudo", "umount", "-f", mnt])
-            return "/tmp/Vending.apk"
-        print("[vending] top:", sh_out(["sudo", "ls", mnt])[:200], flush=True)
-        sh_out(["sudo", "umount", "-f", mnt])
     return ""
 
 
