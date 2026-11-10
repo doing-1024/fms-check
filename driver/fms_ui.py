@@ -743,6 +743,139 @@ def flow_recon(iters=14, gap=6):
     print("[recon] 完成")
 
 
+def img_info(imgdir):
+    for name in sorted(os.listdir(imgdir)):
+        if not name.endswith(".img"):
+            continue
+        p = os.path.join(imgdir, name)
+        sz = os.path.getsize(p)
+        head = sh_out(["bash", "-lc", f"xxd -s 1024 -l 32 {p} 2>/dev/null | head -2"])
+        print(f"[img] {name} size={sz} sb1024={head}", flush=True)
+        print(f"[img] file: {sh_out(['bash', '-lc', f'file {p}'])[:200]}", flush=True)
+
+
+def extract_sysroot(imgdir):
+    """把 system.img 挂/解到 /tmp/sysroot，用于取 build.prop 与 Play Store APK。"""
+    sysimg = os.path.join(imgdir, "system.img")
+    root = "/tmp/sysroot"
+    os.makedirs(root, exist_ok=True)
+    sh_out(["sudo", "umount", "-f", root])
+    for fstype in ("ext4", "erofs"):
+        out = sh_out(["sudo", "mount", "-t", fstype, "-o", "loop,ro", sysimg, root], timeout=180)
+        if sh_out(["mountpoint", root]).find("is a mountpoint") >= 0:
+            print(f"[extract] mounted as {fstype} ✓", flush=True)
+            return root, True
+        print(f"[extract] mount -t {fstype} failed: {out[:160]}", flush=True)
+    print("[extract] 尝试 fsck.erofs --extract（用户态解包）", flush=True)
+    sh_out(["sudo", "apt-get", "install", "-y", "-qq", "erofs-utils"], timeout=600)
+    print("[extract]", sh_out(["sudo", "fsck.erofs", f"--extract={root}", sysimg],
+                              timeout=1800)[-400:], flush=True)
+    return root, os.path.isdir(root)
+
+
+def find_vending(root):
+    out = sh_out(["sudo", "bash", "-lc",
+                  f"find {root} -maxdepth 5 -iname '*vending*' -o -maxdepth 5 -iname "
+                  f"'*Phonesky*' 2>/dev/null | head -20"])
+    print("[vending] candidates:", out[:800], flush=True)
+    return out
+
+
+def sdk_install_pkg(pkg):
+    sd = os.path.join(sdk_home(), "cmdline-tools", "latest", "bin", "sdkmanager")
+    if not os.path.exists(sd):
+        print("[sdk] sdkmanager 缺失", flush=True)
+        return False
+    env = dict(os.environ, JAVA_HOME=sh_out(["bash", "-lc", "ls -d /usr/lib/jvm/*17* 2>/dev/null"
+                                             " | head -1"]) or os.environ.get("JAVA_HOME", ""))
+    print("[sdk] install", pkg, flush=True)
+    r = subprocess.run([sd, "--install", pkg], input="y\n" * 40, capture_output=True,
+                       text=True, timeout=1500, env=env)
+    tail = ((r.stdout or "") + (r.stderr or ""))[-500:]
+    print("[sdk] ->", tail.replace("\n", " | ")[:500], flush=True)
+    return "100%" in (r.stdout or "") or True
+
+
+def make_avd(name, sysdir_rel, w=1080, h=2340, mem=3072):
+    base = os.path.expanduser("~/.android/avd")
+    os.makedirs(os.path.join(base, name + ".avd"), exist_ok=True)
+    with open(os.path.join(base, name + ".ini"), "w") as f:
+        f.write(f"avd.ini.encoding=UTF-8\npath={base}/{name}.avd\npath.rel=avd/{name}.avd\n"
+                f"target=android-34\n")
+    cfg = f"""avd.ini.encoding=UTF-8
+AvdId={name}
+abi.type=x86_64
+hw.cpu.arch=x86_64
+hw.cpu.ncore=2
+hw.ramSize={mem}
+hw.lcd.width={w}
+hw.lcd.height={h}
+hw.lcd.density=440
+hw.gpu.enabled=yes
+hw.gpu.mode=swiftshader_indirect
+hw.keyboard=yes
+hw.mainKeys=no
+disk.dataPartition.size=6G
+image.sysdir.1={sysdir_rel}
+tag.id=google_apis
+tag.display=Google APIs
+hw.initialOrientation=Portrait
+showDeviceFrame=no
+PlayStore.enabled=false
+"""
+    with open(os.path.join(base, name + ".avd", "config.ini"), "w") as f:
+        f.write(cfg)
+    print("[avd]", name, "created, sysdir =", sysdir_rel, flush=True)
+
+
+def explore():
+    """诊断 system.img 格式 / 取 Play Store APK / 装 google_apis(userdebug) 镜像并测 adb root。"""
+    imgdir = emu_image_dir()
+    print("[explore] imagedir =", imgdir, flush=True)
+    img_info(imgdir)
+    root, ok = extract_sysroot(imgdir)
+    print("[explore] extracted:", ok, flush=True)
+    if ok:
+        print("[explore] sysroot top:", sh_out(["sudo", "ls", root])[:300], flush=True)
+        print("[explore] build.prop:",
+              sh_out(["sudo", "grep", "-nE", "debuggable|build.type", root + "/build.prop"]
+                     if os.path.exists(root + "/build.prop") else
+                     ["sudo", "bash", "-lc", f"find {root} -maxdepth 2 -name build.prop"])[:400],
+              flush=True)
+        print("[explore] vending:", find_vending(root)[:800], flush=True)
+    # google_apis (userdebug) 镜像 + root 测试
+    ga_rel = "system-images/android-34/google_apis/x86_64/"
+    ga_dir = os.path.join(sdk_home(), ga_rel)
+    if not os.path.isdir(ga_dir):
+        sdk_install_pkg("system-images;android-34;google_apis;x86_64")
+    print("[explore] google_apis image exists:", os.path.isdir(ga_dir), flush=True)
+    if os.path.isdir(ga_dir):
+        make_avd("ga", ga_rel)
+        adb("emu", "kill", timeout=30)
+        time.sleep(4)
+        subprocess.run(["pkill", "-f", "qemu-system"], capture_output=True)
+        time.sleep(4)
+        emu = os.path.join(sdk_home(), "emulator", "emulator")
+        args = [emu, "-avd", "ga", "-no-window", "-gpu", "swiftshader_indirect", "-no-snapshot",
+                "-noaudio", "-no-boot-anim", "-no-metrics", "-port", "5554"]
+        print("[explore] boot ga:", " ".join(args), flush=True)
+        log = open("ga.log", "wb")
+        subprocess.Popen(args, stdout=log, stderr=log, start_new_session=True)
+        for i in range(40):
+            time.sleep(5)
+            if adb("shell", "getprop", "sys.boot_completed", timeout=30).strip() == "1":
+                print(f"[explore] ga boot ok ({(i + 1) * 5}s)", flush=True)
+                break
+        print("[explore] ga adb root ->", adb("root", timeout=40).strip()[:120], flush=True)
+        for i in range(10):
+            time.sleep(3)
+            if adb_root_ok():
+                break
+        print("[explore] ga id:", adb("shell", "id", timeout=30).strip()[:80], flush=True)
+        print("[explore] ga props:", adb("shell", "getprop | grep -iE 'debuggable|build.type|"
+                                        "veritymode'", timeout=30).strip()[:300], flush=True)
+
+
 def pristine_test():
     """装厂商原始签名四包，看 App 能否在 x86_64 模拟器(ARM 翻译层)上跑起来，
     并抓 'Generated new device ID' 日志判断 generateRandomString 是否仍返回空串。"""
@@ -791,6 +924,9 @@ def main():
     adb("shell", "settings", "put", "global", "window_animation_scale", "0")
     adb("shell", "settings", "put", "global", "transition_animation_scale", "0")
     adb("shell", "settings", "put", "global", "animator_duration_scale", "0")
+    if mode == "recon":
+        explore()
+        return
     # ==== 步骤 1: 原始签名 APK 能否运行（决定整条模拟器路线是否可行）====
     pristine_ok = pristine_test()
     if pristine_ok and mode != "full":
