@@ -168,27 +168,46 @@ def setup_root_jdwp():
     print("[root] sysdir build.prop:", sh_out(["grep", "-nE", "debuggable|secure|build.type", bp])[:400],
           flush=True)
     print("[root] VerifiedBootParams:", sh_out(["cat", vbp])[:1200], flush=True)
-    print("[root] sysdir data dir:", sh_out(["bash", "-lc",
-                                            f"ls -la {sd}/data | head -20"])[:600], flush=True)
-    # 尝试 1: 在 sysdir build.prop 里强制 ro.debuggable=1
-    sh_out(["bash", "-lc", f"grep -q '^ro.debuggable=0' {bp} && sed -i "
-                          f"'s/^ro.debuggable=0/ro.debuggable=1/' {bp}; "
-                          f"grep -q '^ro.debuggable' {bp} || echo ro.debuggable=1 >> {bp}"])
-    print("[root] pw build.prop:", sh_out(["grep", "-nE", "debuggable", bp])[:300], flush=True)
+    print("[root] local.prop:", sh_out(["cat", os.path.join(sd, "data", "local.prop")])[:300], flush=True)
+
+    def probe(tag):
+        print(f"[root] == {tag} ==", flush=True)
+        for k in ("ro.debuggable", "ro.secure", "ro.boot.veritymode",
+                  "persist.debug.dalvik.vm.jdwp.enabled"):
+            print(f"[root] {k} =", adb("shell", "getprop", k, timeout=30).strip(), flush=True)
+        print("[root] adb root ->", adb("root", timeout=30).strip(), flush=True)
+        for _ in range(8):
+            time.sleep(3)
+            if adb_root_ok():
+                break
+        print("[root] id:", adb("shell", "id", timeout=30).strip()[:60], flush=True)
+        print("[root] mounts:", adb("shell", "mount | grep -E 'dm-| / | /vendor '", timeout=30
+                                   ).strip().replace("\n", " | ")[:700], flush=True)
+        return adb_root_ok()
+
+    # 尝试 C: 去掉 androidboot.vbmeta.*（关掉 dm-verity）+ 补丁 system.img
+    print("[root] 去掉 vbmeta 参数 + 补丁 system.img", flush=True)
+    sh_out(["bash", "-lc", f"cp {vbp} {vbp}.bak; sed -i '/androidboot.vbmeta/d' {vbp}; "
+                          f"cat {vbp}"])
+    print("[root] vbp now:", sh_out(["cat", vbp])[:300], flush=True)
     stop_emu()
-    boot_emu([], tag="emu3")
-    for k in ("ro.debuggable", "ro.secure", "ro.build.type"):
-        print(f"[root] after prop-file getprop {k} =",
-              adb("shell", "getprop", k, timeout=30).strip(), flush=True)
-    print("[root] adb root ->", adb("root", timeout=30).strip(), flush=True)
-    for i in range(8):
-        time.sleep(3)
-        if adb_root_ok():
-            adb("shell", "setprop", "persist.debug.dalvik.vm.jdwp.enabled", "1")
-            print("[root] build.prop 生效 root OK, jdwp =", adb(
-                "shell", "getprop", "persist.debug.dalvik.vm.jdwp.enabled").strip(), flush=True)
-            return True
-    print("[root] patch 无效 (hit=", ok, ") dump 诊断", flush=True)
+    patch_images(sd)
+    boot_emu([], tag="emu4")
+    if probe("C: no-vbmeta + patched system.img"):
+        adb("shell", "setprop", "persist.debug.dalvik.vm.jdwp.enabled", "1")
+        return True
+    # 尝试 D: 再加 -writable-system
+    print("[root] 尝试 D: -writable-system", flush=True)
+    stop_emu()
+    boot_emu(["-writable-system"], tag="emu5")
+    if probe("D: writable-system"):
+        adb("shell", "setprop", "persist.debug.dalvik.vm.jdwp.enabled", "1")
+        return True
+    print("[root] 全部失败, dump 诊断", flush=True)
+    print("[root] guest build.prop content:", adb("shell", "su 0 cat /system/build.prop 2>/dev/null | "
+                                                     "grep -n debuggable", timeout=30).strip()[:300],
+          flush=True)
+    print("[root] verity 仍生效", flush=True)
     print("[root] all props:", adb("shell", "getprop | grep -iE 'debuggable|secure|jdwp'",
                                    timeout=30).strip()[:400], flush=True)
     print("[root] guest /system mount:", adb("shell", "mount | grep -E ' /system | /vendor '",
