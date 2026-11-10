@@ -527,13 +527,28 @@ def login_once(dump_prefix="lg"):
     time.sleep(0.5)
     dump_ui("login_ready")
     shot("login_ready")
-    btn = find(nodes("login_ready"), "sign in")
-    if btn:
-        tap(btn)
-        print("[login] 已提交登录")
-    else:
-        print("[login] 未找到 Sign In")
-        return False
+    def submit(tag, label):
+        adb("shell", "input keyevent 111", timeout=30)
+        time.sleep(0.8)
+        dump_ui(tag)
+        nsx = nodes(tag)
+        print("[login] IME:", adb("shell", "dumpsys input_method | grep -m1 mInputShown",
+                                 timeout=30).strip()[:80], flush=True)
+        b = find(nsx, "sign in")
+        if not b:
+            print("[login] 未找到 Sign In")
+            return False
+        tap(b)
+        print(f"[login] 已提交登录({label})", flush=True)
+        time.sleep(6)
+        cnt = adb("shell", "logcat -d -b all | grep -c 'Executing username/password login'",
+                  timeout=90).strip()
+        print("[login] Executing 计数:", cnt, flush=True)
+        return cnt.isdigit() and int(cnt) > 0
+
+    if not submit("signin0", "first"):
+        if not submit("signin1", "retry"):
+            print("[login] Sign In 点击未触发登录请求", flush=True)
     for i in range(11):
         time.sleep(8)
         tag = f"{dump_prefix}_home{i:02d}"
@@ -904,60 +919,94 @@ def gpt_parts(path):
     return parts
 
 
+def find_fs_offset(path, scan=64 * 1024 * 1024):
+    """在镜像前 64MB 里找 ext4/erofs/f2fs 超级块偏移（GPT 分区起点）。"""
+    magics = [(b"\x53\xef", "ext4", 1080), (b"\xe2\xe1\xf5\xe0", "erofs", 1024),
+              (b"\x10\x20\xf5\xf2", "f2fs", 1024)]
+    try:
+        with open(path, "rb") as f:
+            buf = f.read(scan + 8192)
+    except Exception as e:
+        print("[fs] read err", e, flush=True)
+        return None, 0
+    for off in range(0, max(0, len(buf) - 8192), 512):
+        for m, name, delta in magics:
+            if buf[off + delta:off + delta + len(m)] == m:
+                return name, off
+    return None, 0
+
+
 def extract_vending_from_playstore_image():
-    """从 playstore 镜像 system.img(GPT) 的第二个分区取出 Vending.apk。"""
-    img = os.path.join(emu_image_dir(), "system.img")
+    """在全盘镜像里定位 fs 分区 -> 挂载 -> 取 Vending.apk。"""
     mnt = "/tmp/psimg"
     os.makedirs(mnt, exist_ok=True)
-    parts = gpt_parts(img)
-    print("[vending] gpt", parts, flush=True)
-    if not parts:
-        return ""
-    st, en = parts[-1]
-    part = "/tmp/ps_part.img"
-    print("[vending] dd partition offset", st * 512, flush=True)
-    sh_out(["sudo", "rm", "-f", part])
-    sh_out(["sudo", "bash", "-lc", f"dd if={img} of={part} bs=1M skip={st * 512 // (1024 * 1024)} "
-                                   f"count={(en - st + 1) * 512 // (1024 * 1024)} status=none"],
-           timeout=900)
-    print("[vending] part size:", sh_out(["sudo", "stat", "-c", "%s", part])[:40], flush=True)
-    print("[vending] file:", sh_out(["sudo", "file", part])[:200], flush=True)
-    sh_out(["sudo", "umount", "-f", mnt])
-    for fstype in ("ext4", "erofs"):
-        out = sh_out(["sudo", "mount", "-t", fstype, "-o", "loop,ro", part, mnt], timeout=180)
-        if sh_out(["mountpoint", mnt]).find("is a mountpoint") >= 0:
-            print(f"[vending] mounted as {fstype} ✓", flush=True)
-            found = sh_out(["sudo", "bash", "-lc",
-                            f"find {mnt} -maxdepth 6 -iname 'Vending.apk' -o -maxdepth 6 "
-                            f"-iname 'Phonesky.apk' 2>/dev/null | head -5"])
-            print("[vending] found:", found[:400], flush=True)
-            if found.strip():
-                first = found.strip().splitlines()[0]
-                sh_out(["sudo", "cp", first, "/tmp/Vending.apk"])
-                sh_out(["sudo", "chmod", "644", "/tmp/Vending.apk"])
-                print("[vending] size:", os.path.getsize("/tmp/Vending.apk"), flush=True)
-                sh_out(["sudo", "umount", "-f", mnt])
-                return "/tmp/Vending.apk"
+    for name in ("system.img", "vendor.img", "product.img"):
+        img = os.path.join(emu_image_dir(), name)
+        if not os.path.exists(img):
+            continue
+        fstype, off = find_fs_offset(img)
+        print(f"[vending] {name}: fstype={fstype} offset={off} gpt={gpt_parts(img)}", flush=True)
+        if not fstype:
+            continue
+        sh_out(["sudo", "umount", "-f", mnt])
+        out = sh_out(["sudo", "mount", "-t", fstype, "-o", f"loop,ro,offset={off}", img, mnt],
+                     timeout=240)
+        if sh_out(["mountpoint", mnt]).find("is a mountpoint") < 0:
+            print("[vending] mount failed:", out[:160], flush=True)
+            continue
+        print(f"[vending] mounted {name} as {fstype} @ {off} ✓", flush=True)
+        found = sh_out(["sudo", "bash", "-lc",
+                        f"find {mnt} -maxdepth 7 -iname 'Vending.apk' -o -maxdepth 7 "
+                        f"-iname 'Phonesky.apk' -o -maxdepth 7 -iname 'base.apk' "
+                        f"-path '*ending*' 2>/dev/null | head -5"])
+        print("[vending] found:", found[:400], flush=True)
+        if found.strip():
+            first = found.strip().splitlines()[0]
+            sh_out(["sudo", "cp", first, "/tmp/Vending.apk"])
+            sh_out(["sudo", "chmod", "644", "/tmp/Vending.apk"])
+            print("[vending] size:", os.path.getsize("/tmp/Vending.apk"), flush=True)
             sh_out(["sudo", "umount", "-f", mnt])
-        else:
-            print(f"[vending] mount -t {fstype} failed:", out[:140], flush=True)
-    # erofs 用户态解包兜底
-    sh_out(["sudo", "apt-get", "install", "-y", "-qq", "erofs-utils"], timeout=600)
-    print("[vending] fsck.erofs extract", flush=True)
-    sh_out(["sudo", "rm", "-rf", mnt])
-    os.makedirs(mnt, exist_ok=True)
-    print("[vending]", sh_out(["sudo", "fsck.erofs", f"--extract={mnt}", part],
-                              timeout=1800)[-300:], flush=True)
-    found = sh_out(["sudo", "bash", "-lc",
-                    f"find {mnt} -maxdepth 7 -iname 'Vending.apk' -o -maxdepth 7 -iname "
-                    f"'Phonesky.apk' 2>/dev/null | head -5"])
-    print("[vending] found(extract):", found[:400], flush=True)
-    if found.strip():
-        first = found.strip().splitlines()[0]
-        sh_out(["sudo", "cp", first, "/tmp/Vending.apk"])
-        sh_out(["sudo", "chmod", "644", "/tmp/Vending.apk"])
-        return "/tmp/Vending.apk"
+            return "/tmp/Vending.apk"
+        print("[vending] top:", sh_out(["sudo", "ls", mnt])[:200], flush=True)
+        sh_out(["sudo", "umount", "-f", mnt])
     return ""
+
+
+def vend_mode():
+    """只做: 从 playstore 镜像抽 Vending.apk 并装成系统应用（独立小实验）。"""
+    boot_ga()
+    v = extract_vending_from_playstore_image()
+    print("[vend] vending apk:", v, flush=True)
+    if not v:
+        return False
+    print("[vend] disable-verity:", adb("disable-verity", timeout=180).strip()[:150], flush=True)
+    adb("reboot", timeout=60)
+    time.sleep(12)
+    for _ in range(24):
+        time.sleep(5)
+        if adb("shell", "getprop", "sys.boot_completed", timeout=30).strip() == "1":
+            break
+    print("[vend] root:", adb("root", timeout=40).strip()[:60], flush=True)
+    time.sleep(5)
+    print("[vend] remount:", adb("remount", timeout=300).strip().replace("\n", " | ")[:400],
+          flush=True)
+    adb("shell", "mkdir -p /system/priv-app/Vending", timeout=60)
+    print("[vend] push:", adb("push", v, "/system/priv-app/Vending/Vending.apk", timeout=600)[:120],
+          flush=True)
+    print("[vend] fix:", adb("shell", "chmod 644 /system/priv-app/Vending/Vending.apk; "
+                                     "restorecon -R /system/priv-app/Vending; df -h /system | tail -1",
+                             timeout=120).strip()[:300], flush=True)
+    adb("reboot", timeout=60)
+    time.sleep(15)
+    for _ in range(24):
+        time.sleep(5)
+        if adb("shell", "getprop", "sys.boot_completed", timeout=30).strip() == "1":
+            break
+    print("[vend] pm path:", adb("shell", "pm path com.android.vending", timeout=60).strip()[:150],
+          flush=True)
+    print("[vend] pkgs:", adb("shell", "pm list packages | grep -i -e vending -e gms",
+                              timeout=60).strip()[:300], flush=True)
+    return True
 
 
 def boot_ga():
@@ -1239,6 +1288,9 @@ def main():
         return
     if mode == "ga":
         ga_flow()
+        return
+    if mode == "vend":
+        vend_mode()
         return
     # ==== 步骤 1: 原始签名 APK 能否运行（决定整条模拟器路线是否可行）====
     pristine_ok = pristine_test()
