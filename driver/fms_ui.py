@@ -876,6 +876,221 @@ def explore():
                                         "veritymode'", timeout=30).strip()[:300], flush=True)
 
 
+GA_REL = "system-images/android-34/google_apis/x86_64/"
+
+
+def gpt_parts(path):
+    """返回 GPT 第一分区的 (start_lba, end_lba)；系统镜像是整块 GPT 盘。"""
+    parts = []
+    try:
+        with open(path, "rb") as f:
+            f.seek(512)
+            hdr = f.read(92)
+            if hdr[:8] != b"EFI PART":
+                return parts
+            nent = int.from_bytes(hdr[80:84], "little")
+            f.seek(1024)
+            ent = f.read(128 * min(nent, 8))
+            for i in range(min(nent, 8)):
+                e = ent[i * 128:(i + 1) * 128]
+                if e[0:16] == b"\x00" * 16:
+                    continue
+                parts.append((int.from_bytes(e[32:40], "little"),
+                              int.from_bytes(e[40:48], "little")))
+    except Exception as ex:
+        print("[gpt] err", ex, flush=True)
+    return parts
+
+
+def extract_vending_from_playstore_image():
+    """从 playstore 镜像 system.img(GPT) 挂出分区，找 Vending.apk 并拉到 ./Vending.apk。"""
+    img = os.path.join(emu_image_dir(), "system.img")
+    mnt = "/tmp/psimg"
+    os.makedirs(mnt, exist_ok=True)
+    for img_path in (img, os.path.join(emu_image_dir(), "vendor.img")):
+        parts = gpt_parts(img_path)
+        print("[vending] gpt", img_path, parts, flush=True)
+        for st, en in parts:
+            sh_out(["sudo", "umount", "-f", mnt])
+            out = sh_out(["sudo", "mount", "-o", f"loop,ro,offset={st * 512}",
+                          img_path, mnt], timeout=180)
+            if sh_out(["mountpoint", mnt]).find("is a mountpoint") < 0:
+                print("[vending] mount failed:", out[:140], flush=True)
+                continue
+            found = sh_out(["sudo", "bash", "-lc",
+                            f"find {mnt} -maxdepth 6 -iname 'Vending.apk' -o -maxdepth 6 "
+                            f"-iname 'Phonesky.apk' 2>/dev/null | head -5"])
+            print("[vending] found:", found[:400], flush=True)
+            if found.strip():
+                first = found.strip().splitlines()[0]
+                sh_out(["sudo", "cp", first, "/tmp/Vending.apk"])
+                sh_out(["sudo", "chmod", "644", "/tmp/Vending.apk"])
+                print("[vending] size:", os.path.getsize("/tmp/Vending.apk"), flush=True)
+                sh_out(["sudo", "umount", "-f", mnt])
+                return "/tmp/Vending.apk"
+            sh_out(["sudo", "umount", "-f", mnt])
+    return ""
+
+
+def boot_ga():
+    """引导 google_apis(userdebug) 镜像：可用 adb root。"""
+    ga_dir = os.path.join(sdk_home(), GA_REL)
+    if not os.path.isdir(ga_dir):
+        sdk_install_pkg("system-images;android-34;google_apis;x86_64")
+    if not os.path.isdir(ga_dir):
+        print("[ga] 镜像不存在, 放弃", flush=True)
+        return False
+    make_avd("ga", GA_REL)
+    adb("emu", "kill", timeout=30)
+    time.sleep(4)
+    subprocess.run(["pkill", "-f", "qemu-system"], capture_output=True)
+    time.sleep(4)
+    emu = os.path.join(sdk_home(), "emulator", "emulator")
+    args = [emu, "-avd", "ga", "-no-window", "-gpu", "swiftshader_indirect", "-no-snapshot",
+            "-noaudio", "-no-boot-anim", "-no-metrics", "-port", "5554"]
+    print("[ga] boot:", " ".join(args), flush=True)
+    log = open("ga.log", "wb")
+    subprocess.Popen(args, stdout=log, stderr=log, start_new_session=True)
+    for i in range(40):
+        time.sleep(5)
+        if adb("shell", "getprop", "sys.boot_completed", timeout=30).strip() == "1":
+            print(f"[ga] boot ok ({(i + 1) * 5}s)", flush=True)
+            break
+    print("[ga] adb root ->", adb("root", timeout=40).strip()[:80], flush=True)
+    for _ in range(10):
+        time.sleep(3)
+        if adb_root_ok():
+            break
+    if not adb_root_ok():
+        print("[ga] root FAILED", flush=True)
+        return False
+    adb("shell", "setprop", "persist.debug.dalvik.vm.jdwp.enabled", "1")
+    print("[ga] jdwp =", adb("shell", "getprop",
+                             "persist.debug.dalvik.vm.jdwp.enabled").strip(), flush=True)
+    adb("shell", "settings", "put", "global", "window_animation_scale", "0")
+    adb("shell", "settings", "put", "global", "transition_animation_scale", "0")
+    adb("shell", "settings", "put", "global", "animator_duration_scale", "0")
+    return True
+
+
+def push_pristine_libs():
+    """把 split 里的 arm64 .so 手工塞进应用 nativeLibraryDir，让原签名包起得来。"""
+    import zipfile
+    dst = "/tmp/lib64"
+    os.makedirs(dst, exist_ok=True)
+    for apk in ("config.arm64_v8a.apk", "config.en.apk", "config.mdpi.apk"):
+        try:
+            z = zipfile.ZipFile(apk)
+        except Exception:
+            continue
+        for n in z.namelist():
+            if n.startswith("lib/arm64-v8a/") and n.endswith(".so"):
+                with open(os.path.join(dst, os.path.basename(n)), "wb") as f:
+                    f.write(z.read(n))
+    names = sorted(os.listdir(dst))
+    print("[libs] extracted:", len(names), names[:3], flush=True)
+    if not names:
+        return False
+    adb("shell", "rm", "-rf", "/data/local/tmp/lib64")
+    adb("push", dst, "/data/local/tmp/", timeout=600)
+    out = adb("shell", f"dumpsys package {PKG} | grep -m1 legacyNativeLibraryDir", timeout=60).strip()
+    libdir = out.split("=")[-1].strip() if "=" in out else ""
+    print("[libs] legacyNativeLibraryDir =", libdir, flush=True)
+    native = libdir.rstrip("/")
+    if not native:
+        return False
+    abi_dir = native + "/arm64"
+    cmd = (f"mkdir -p {abi_dir} && cp /data/local/tmp/lib64/*.so {abi_dir}/ && "
+           f"chmod 755 {abi_dir}/*.so && chown -R $(stat -c %u:%g {native}) {abi_dir} && "
+           f"restorecon -R {abi_dir} ; ls -la {abi_dir} | head -5")
+    print("[libs]", adb("shell", cmd, timeout=300).strip()[:800], flush=True)
+    print("[libs] abilist:", adb("shell", "getprop ro.product.cpu.abilist").strip(), flush=True)
+    return True
+
+
+def ga_flow():
+    """完整目标：原签名 APK + root 注入 deviceId + Play Store 签 token。"""
+    if not boot_ga():
+        return False
+    print("[ga] uninstall:", adb("uninstall", PKG, timeout=120).strip()[:80], flush=True)
+    print("[ga] install pristine:", adb(
+        "install-multiple", "-r", "-g", "--abi", "arm64-v8a", "fms.apk", "config.arm64_v8a.apk",
+        "config.en.apk", "config.mdpi.apk", timeout=900)[:300], flush=True)
+    push_pristine_libs()
+    adb("logcat", "-c", timeout=60)
+    print("[ga] am start:", adb("shell", "am", "start", "-W", "-n", PKG + "/.MainActivity",
+                                timeout=180).strip()[:300], flush=True)
+    alive = ""
+    for i in range(8):
+        time.sleep(3)
+        alive = app_pid()
+        print(f"[ga] pid {i}: {alive or 'dead'}", flush=True)
+        if alive:
+            break
+    if not alive:
+        print("[ga] logcat:\n" + adb(
+            "shell", "logcat -d -b all | grep -iE 'nunofacha|SoLoader|AndroidRuntime|am_crash' "
+                      "| tail -25", timeout=120)[:2500], flush=True)
+        save_logcat("ga")
+        return False
+    print("[ga] App 起来了 ✓ deviceId 日志:", adb(
+        "shell", "logcat -d -b all | grep -m2 -a 'Generated new device ID\|Device ID already'",
+        timeout=120).strip()[:300], flush=True)
+    # deviceId 注入
+    ok = False
+    for round_ in range(2):
+        pids = (app_pid() or "").split()
+        print(f"[ga] inject round {round_} pids={pids}", flush=True)
+        if not pids:
+            relaunch()
+            continue
+        ok = inject_device_id(adb, pids) if inject_device_id else False
+        print("[ga] inject:", "OK" if ok else "FAILED", flush=True)
+        if ok:
+            break
+        relaunch()
+    if ok:
+        relaunch()
+    # ==== Play Store: 从 playstore 镜像抽出 Vending 装成系统应用 ====
+    v = extract_vending_from_playstore_image()
+    if not v:
+        print("[ga] 未取到 Vending.apk, 跳过 Play Store", flush=True)
+        return True
+    print("[ga] disable-verity:", adb("disable-verity", timeout=180).strip()[:200], flush=True)
+    adb("reboot", timeout=60)
+    time.sleep(15)
+    for _ in range(20):
+        time.sleep(5)
+        if adb("shell", "getprop", "sys.boot_completed", timeout=30).strip() == "1":
+            break
+    print("[ga] reboot1 done, root:", adb("root", timeout=40).strip()[:60], flush=True)
+    time.sleep(5)
+    print("[ga] remount:", adb("remount", timeout=300).strip().replace("\n", " | ")[:400], flush=True)
+    adb("shell", "mkdir -p /system/priv-app/Vending", timeout=60)
+    print("[ga] push Vending:", adb("push", v, "/system/priv-app/Vending/Vending.apk",
+                                    timeout=600)[:200], flush=True)
+    print("[ga] chmod:", adb("shell", "chmod 644 /system/priv-app/Vending/Vending.apk && "
+                                     "restorecon -R /system/priv-app/Vending && "
+                                     "ls -laZ /system/priv-app/Vending", timeout=120
+                              ).strip()[:400], flush=True)
+    adb("reboot", timeout=60)
+    time.sleep(20)
+    for _ in range(20):
+        time.sleep(5)
+        if adb("shell", "getprop", "sys.boot_completed", timeout=30).strip() == "1":
+            break
+    print("[ga] vending installed:", adb("shell", "pm list packages | grep -i vending",
+                                         timeout=60).strip()[:200], flush=True)
+    print("[ga] vending path:", adb("shell", "pm path com.android.vending",
+                                    timeout=60).strip()[:200], flush=True)
+    print("[ga] gms:", adb("shell", "pm list packages | grep -iE 'com.google.android.gms$'",
+                           timeout=60).strip()[:200], flush=True)
+    print("[ga] 重启 App 准备跑流程:", relaunch(), flush=True)
+    time.sleep(5)
+    flow_full()
+    return True
+
+
 def pristine_test():
     """装厂商原始签名四包，看 App 能否在 x86_64 模拟器(ARM 翻译层)上跑起来，
     并抓 'Generated new device ID' 日志判断 generateRandomString 是否仍返回空串。"""
@@ -926,6 +1141,9 @@ def main():
     adb("shell", "settings", "put", "global", "animator_duration_scale", "0")
     if mode == "recon":
         explore()
+        return
+    if mode == "ga":
+        ga_flow()
         return
     # ==== 步骤 1: 原始签名 APK 能否运行（决定整条模拟器路线是否可行）====
     pristine_ok = pristine_test()
