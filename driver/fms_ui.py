@@ -6,6 +6,7 @@
   full  - 完整流程: 登录 -> Free Credits -> claim -> 看广告 -> 领取
 """
 import os
+import shutil
 import re
 import subprocess
 import sys
@@ -903,20 +904,28 @@ def gpt_parts(path):
 
 
 def extract_vending_from_playstore_image():
-    """从 playstore 镜像 system.img(GPT) 挂出分区，找 Vending.apk 并拉到 ./Vending.apk。"""
+    """从 playstore 镜像 system.img(GPT) 的第二个分区取出 Vending.apk。"""
     img = os.path.join(emu_image_dir(), "system.img")
     mnt = "/tmp/psimg"
     os.makedirs(mnt, exist_ok=True)
-    for img_path in (img, os.path.join(emu_image_dir(), "vendor.img")):
-        parts = gpt_parts(img_path)
-        print("[vending] gpt", img_path, parts, flush=True)
-        for st, en in parts:
-            sh_out(["sudo", "umount", "-f", mnt])
-            out = sh_out(["sudo", "mount", "-o", f"loop,ro,offset={st * 512}",
-                          img_path, mnt], timeout=180)
-            if sh_out(["mountpoint", mnt]).find("is a mountpoint") < 0:
-                print("[vending] mount failed:", out[:140], flush=True)
-                continue
+    parts = gpt_parts(img)
+    print("[vending] gpt", parts, flush=True)
+    if not parts:
+        return ""
+    st, en = parts[-1]
+    part = "/tmp/ps_part.img"
+    print("[vending] dd partition offset", st * 512, flush=True)
+    sh_out(["sudo", "rm", "-f", part])
+    sh_out(["sudo", "bash", "-lc", f"dd if={img} of={part} bs=1M skip={st * 512 // (1024 * 1024)} "
+                                   f"count={(en - st + 1) * 512 // (1024 * 1024)} status=none"],
+           timeout=900)
+    print("[vending] part size:", sh_out(["sudo", "stat", "-c", "%s", part])[:40], flush=True)
+    print("[vending] file:", sh_out(["sudo", "file", part])[:200], flush=True)
+    sh_out(["sudo", "umount", "-f", mnt])
+    for fstype in ("ext4", "erofs"):
+        out = sh_out(["sudo", "mount", "-t", fstype, "-o", "loop,ro", part, mnt], timeout=180)
+        if sh_out(["mountpoint", mnt]).find("is a mountpoint") >= 0:
+            print(f"[vending] mounted as {fstype} ✓", flush=True)
             found = sh_out(["sudo", "bash", "-lc",
                             f"find {mnt} -maxdepth 6 -iname 'Vending.apk' -o -maxdepth 6 "
                             f"-iname 'Phonesky.apk' 2>/dev/null | head -5"])
@@ -929,6 +938,24 @@ def extract_vending_from_playstore_image():
                 sh_out(["sudo", "umount", "-f", mnt])
                 return "/tmp/Vending.apk"
             sh_out(["sudo", "umount", "-f", mnt])
+        else:
+            print(f"[vending] mount -t {fstype} failed:", out[:140], flush=True)
+    # erofs 用户态解包兜底
+    sh_out(["sudo", "apt-get", "install", "-y", "-qq", "erofs-utils"], timeout=600)
+    print("[vending] fsck.erofs extract", flush=True)
+    sh_out(["sudo", "rm", "-rf", mnt])
+    os.makedirs(mnt, exist_ok=True)
+    print("[vending]", sh_out(["sudo", "fsck.erofs", f"--extract={mnt}", part],
+                              timeout=1800)[-300:], flush=True)
+    found = sh_out(["sudo", "bash", "-lc",
+                    f"find {mnt} -maxdepth 7 -iname 'Vending.apk' -o -maxdepth 7 -iname "
+                    f"'Phonesky.apk' 2>/dev/null | head -5"])
+    print("[vending] found(extract):", found[:400], flush=True)
+    if found.strip():
+        first = found.strip().splitlines()[0]
+        sh_out(["sudo", "cp", first, "/tmp/Vending.apk"])
+        sh_out(["sudo", "chmod", "644", "/tmp/Vending.apk"])
+        return "/tmp/Vending.apk"
     return ""
 
 
@@ -1012,84 +1039,147 @@ def push_pristine_libs():
     return True
 
 
+def seed_dir():
+    return os.path.join(OUT, "mmkv_seed")
+
+
+def install_hybrid():
+    print("[hybrid] uninstall:", adb("uninstall", PKG, timeout=120).strip()[:100], flush=True)
+    print("[hybrid] install:", adb(
+        "install-multiple", "-r", "-g", "fms_patched-aligned-debugSigned.apk",
+        "cfg_arm64-aligned-debugSigned.apk", "config.en-aligned-debugSigned.apk",
+        "config.mdpi-aligned-debugSigned.apk", timeout=900)[:200], flush=True)
+
+
+def install_pristine():
+    print("[pristine] uninstall:", adb("uninstall", PKG, timeout=120).strip()[:100], flush=True)
+    print("[pristine] install:", adb(
+        "install-multiple", "-r", "-g", "--abi", "arm64-v8a", "fms.apk",
+        "config.arm64_v8a.apk", "config.en.apk", "config.mdpi.apk", timeout=900)[:200], flush=True)
+
+
+def harvest_mmkv_seed():
+    """hybrid(debuggable) 包注入好 deviceId 后，root 把 MMKV 目录整份捞出来。"""
+    d = seed_dir()
+    shutil.rmtree(d, ignore_errors=True)
+    os.makedirs(d, exist_ok=True)
+    adb("shell", f"rm -rf /data/local/tmp/seed && mkdir -p /data/local/tmp/seed && "
+                 f"cp -a {MMKV_ROOT}/. /data/local/tmp/seed/ 2>/dev/null; "
+                 f"chmod -R 777 /data/local/tmp/seed; ls -la /data/local/tmp/seed", timeout=120)
+    print("[seed] pull:", adb("pull", "/data/local/tmp/seed/.", d, timeout=300)[:200], flush=True)
+    print("[seed] files:", sorted(os.listdir(d)) if os.path.isdir(d) else "MISSING", flush=True)
+    print("[seed] deviceId in seed:", sh_out(["bash", "-lc",
+                                              f"strings {d}/default 2>/dev/null | grep -c FMSDEV"])[:20],
+          flush=True)
+    return os.path.isdir(d) and len(os.listdir(d)) > 0
+
+
+def plant_mmkv_seed():
+    d = seed_dir()
+    if not (os.path.isdir(d) and os.listdir(d)):
+        print("[seed] 没有 seed, 跳过移植", flush=True)
+        return False
+    adb("shell", f"mkdir -p {MMKV_ROOT}", timeout=60)
+    print("[seed] push:", adb("push", d + "/.", MMKV_ROOT, timeout=300)[:120], flush=True)
+    uid = adb("shell", f"stat -c %u:%g /data/data/{PKG}", timeout=60).strip()
+    print("[seed] app uid:", uid, flush=True)
+    print("[seed] fixup:", adb(
+        "shell", f"chown -R {uid} {MMKV_ROOT} && chmod -R 600 {MMKV_ROOT}/* && "
+                 f"chmod 700 {MMKV_ROOT} && restorecon -R {MMKV_ROOT}; ls -la {MMKV_ROOT}",
+        timeout=120).strip()[:500], flush=True)
+    return True
+
+
 def ga_flow():
-    """完整目标：原签名 APK + root 注入 deviceId + Play Store 签 token。"""
+    """目标：原签名 APK + 从 debuggable 包移植来的 MMKV(deviceId) + Play Store 签 token。"""
     if not boot_ga():
         return False
-    print("[ga] uninstall:", adb("uninstall", PKG, timeout=120).strip()[:80], flush=True)
-    print("[ga] install pristine:", adb(
-        "install-multiple", "-r", "-g", "--abi", "arm64-v8a", "fms.apk", "config.arm64_v8a.apk",
-        "config.en.apk", "config.mdpi.apk", timeout=900)[:300], flush=True)
-    push_pristine_libs()
-    adb("logcat", "-c", timeout=60)
-    print("[ga] am start:", adb("shell", "am", "start", "-W", "-n", PKG + "/.MainActivity",
-                                timeout=180).strip()[:300], flush=True)
-    alive = ""
+    # ---- 1) hybrid 包: JDI 注入 deviceId, 然后 harvest MMKV ----
+    install_hybrid()
+    adb("shell", "monkey", "-p", PKG, "-c", "android.intent.category.LAUNCHER", "1")
     for i in range(8):
         time.sleep(3)
-        alive = app_pid()
-        print(f"[ga] pid {i}: {alive or 'dead'}", flush=True)
-        if alive:
+        if app_pid():
             break
-    if not alive:
-        print("[ga] logcat:\n" + adb(
-            "shell", "logcat -d -b all | grep -i -e nunofacha -e SoLoader -e AndroidRuntime "
-                      "-e am_crash -e reactnative | tail -30", timeout=120)[:3000], flush=True)
-        save_logcat("ga")
-        return False
-    print("[ga] App 起来了 ✓ deviceId 日志:", adb(
-        "shell", "logcat -d -b all | grep -m2 -a -e 'Generated new device ID' "
-                 "-e 'Device ID already'", timeout=120).strip()[:300], flush=True)
-    # deviceId 注入
+    print("[hybrid] pid:", app_pid() or "dead", flush=True)
     ok = False
     for round_ in range(2):
         pids = (app_pid() or "").split()
-        print(f"[ga] inject round {round_} pids={pids}", flush=True)
+        print(f"[hybrid] inject round {round_} pids={pids}", flush=True)
         if not pids:
             relaunch()
             continue
         ok = inject_device_id(adb, pids) if inject_device_id else False
-        print("[ga] inject:", "OK" if ok else "FAILED", flush=True)
+        print("[hybrid] inject:", "OK" if ok else "FAILED", flush=True)
         if ok:
             break
         relaunch()
     if ok:
         relaunch()
-    # ==== Play Store: 从 playstore 镜像抽出 Vending 装成系统应用 ====
+        time.sleep(4)
+        print("[hybrid] deviceId 回读:", adb(
+            "shell", "logcat -d -b all | grep -m2 -a -e 'Device ID already' -e "
+                     "'Generated new device ID'", timeout=120).strip()[:300], flush=True)
+        harvest_mmkv_seed()
+    # ---- 2) 原签名包 + 移植 MMKV + 手工补 .so ----
+    install_pristine()
+    push_pristine_libs()
+    adb("shell", "am", "start", "-W", "-n", PKG + "/.MainActivity", timeout=180)
+    for i in range(6):
+        time.sleep(3)
+        if app_pid():
+            break
+    print("[ga] pristine pid (first launch):", app_pid() or "dead", flush=True)
+    adb("shell", "am", "force-stop", PKG, timeout=60)
+    time.sleep(2)
+    plant_mmkv_seed()
+    adb("logcat", "-c", timeout=60)
+    adb("shell", "monkey", "-p", PKG, "-c", "android.intent.category.LAUNCHER", "1")
+    for i in range(8):
+        time.sleep(3)
+        if app_pid():
+            break
+    print("[ga] pristine pid (seeded):", app_pid() or "dead", flush=True)
+    print("[ga] deviceId 日志:", adb(
+        "shell", "logcat -d -b all | grep -m3 -a -e 'Device ID already' -e "
+                 "'Generated new device ID' -e 'Device registration response'", timeout=120
+    ).strip()[:600], flush=True)
+    if not app_pid():
+        save_logcat("ga_seeded")
+        return False
+    # ---- 3) Play Store (integrity token 需要) ----
     v = extract_vending_from_playstore_image()
-    if not v:
-        print("[ga] 未取到 Vending.apk, 跳过 Play Store", flush=True)
-        return True
-    print("[ga] disable-verity:", adb("disable-verity", timeout=180).strip()[:200], flush=True)
-    adb("reboot", timeout=60)
-    time.sleep(15)
-    for _ in range(20):
+    if v:
+        print("[ga] disable-verity:", adb("disable-verity", timeout=180).strip()[:120], flush=True)
+        adb("reboot", timeout=60)
+        time.sleep(15)
+        for _ in range(24):
+            time.sleep(5)
+            if adb("shell", "getprop", "sys.boot_completed", timeout=30).strip() == "1":
+                break
+        print("[ga] root:", adb("root", timeout=40).strip()[:60], flush=True)
         time.sleep(5)
-        if adb("shell", "getprop", "sys.boot_completed", timeout=30).strip() == "1":
-            break
-    print("[ga] reboot1 done, root:", adb("root", timeout=40).strip()[:60], flush=True)
-    time.sleep(5)
-    print("[ga] remount:", adb("remount", timeout=300).strip().replace("\n", " | ")[:400], flush=True)
-    adb("shell", "mkdir -p /system/priv-app/Vending", timeout=60)
-    print("[ga] push Vending:", adb("push", v, "/system/priv-app/Vending/Vending.apk",
-                                    timeout=600)[:200], flush=True)
-    print("[ga] chmod:", adb("shell", "chmod 644 /system/priv-app/Vending/Vending.apk && "
-                                     "restorecon -R /system/priv-app/Vending && "
-                                     "ls -laZ /system/priv-app/Vending", timeout=120
-                              ).strip()[:400], flush=True)
-    adb("reboot", timeout=60)
-    time.sleep(20)
-    for _ in range(20):
-        time.sleep(5)
-        if adb("shell", "getprop", "sys.boot_completed", timeout=30).strip() == "1":
-            break
-    print("[ga] vending installed:", adb("shell", "pm list packages | grep -i vending",
-                                         timeout=60).strip()[:200], flush=True)
-    print("[ga] vending path:", adb("shell", "pm path com.android.vending",
-                                    timeout=60).strip()[:200], flush=True)
-    print("[ga] gms:", adb("shell", "pm list packages | grep -iE 'com.google.android.gms$'",
-                           timeout=60).strip()[:200], flush=True)
-    print("[ga] 重启 App 准备跑流程:", relaunch(), flush=True)
+        print("[ga] remount:", adb("remount", timeout=300).strip().replace("\n", " | ")[:400],
+              flush=True)
+        adb("shell", "mkdir -p /system/priv-app/Vending", timeout=60)
+        print("[ga] push Vending:", adb("push", v, "/system/priv-app/Vending/Vending.apk",
+                                        timeout=600)[:150], flush=True)
+        adb("shell", "chmod 644 /system/priv-app/Vending/Vending.apk; "
+                     "restorecon -R /system/priv-app/Vending", timeout=120)
+        adb("reboot", timeout=60)
+        time.sleep(20)
+        for _ in range(24):
+            time.sleep(5)
+            if adb("shell", "getprop", "sys.boot_completed", timeout=30).strip() == "1":
+                break
+        print("[ga] vending:", adb("shell", "pm path com.android.vending",
+                                   timeout=60).strip()[:150], flush=True)
+        print("[ga] gms:", adb("shell", "pm list packages | grep -i -e gms -e vending",
+                               timeout=60).strip()[:300], flush=True)
+        plant_mmkv_seed()
+    else:
+        print("[ga] 无 Play Store, 仅验证 deviceId 移植", flush=True)
+    relaunch()
     time.sleep(5)
     flow_full()
     return True
