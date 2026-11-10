@@ -84,7 +84,7 @@ public class MmkvInject {
 
             ThreadReference thread = null;
             EventQueue q = vm.eventQueue();
-            long deadline = System.currentTimeMillis() + 90000;
+            long deadline = System.currentTimeMillis() + 45000;
             while (System.currentTimeMillis() < deadline && thread == null) {
                 com.sun.jdi.event.EventSet es = q.remove(2000);
                 if (es == null) continue;
@@ -99,7 +99,7 @@ public class MmkvInject {
                 }
                 if (!hit) es.resume();
             }
-            if (thread == null) throw new RuntimeException("no breakpoint hit in 90s");
+            if (thread == null) throw new RuntimeException("no breakpoint hit in 45s");
 
             bp.disable();
             erm.deleteEventRequest(bp);

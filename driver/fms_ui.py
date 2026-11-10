@@ -591,17 +591,15 @@ def main():
         sys.exit(1)
     # ==== 关键: 用 JDWP 让 App 自己的 MMKV 写入 deviceId ====
     if inject_device_id:
-        print("[main] 等 MMKV 文件就绪...")
-        wait_mmkv(adb)
-        wait_login_ready()
+        print("[main] 立刻注入 (App 启动期日志密集, 断点易命中)")
+        time.sleep(2)
         ok = False
-        for round_ in range(3):
+        for round_ in range(2):
             pids = (app_pid() or "").split()
             print(f"[main] 注入轮次 {round_} pids = {pids}", flush=True)
             if not pids:
                 print("[main] App 已死, 重新拉起", flush=True)
                 relaunch()
-                wait_login_ready()
                 continue
             ok = inject_device_id(adb, pids)
             print("[main] deviceId 注入:", "OK" if ok else "FAILED", flush=True)
@@ -611,7 +609,6 @@ def main():
             print("[main] 注入失败, 重启 App 重试", flush=True)
             time.sleep(3)
             relaunch()
-            wait_login_ready()
         time.sleep(3)
         print("[main] pid after inject:", app_pid() or "dead")
         if ok:

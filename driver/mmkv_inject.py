@@ -41,7 +41,7 @@ def wait_mmkv(adb, rounds=12, gap=5):
     return False
 
 
-def inject_device_id(adb, pids, key="deviceId", value=DEV_ID, tries=3):
+def inject_device_id(adb, pids, key="deviceId", value=DEV_ID, tries=2):
     """返回 True 表示写入并回读成功"""
     cp = build()
     for attempt in range(tries):
@@ -53,7 +53,7 @@ def inject_device_id(adb, pids, key="deviceId", value=DEV_ID, tries=3):
             try:
                 r = subprocess.run([javabin("java"), "-classpath", cp, "MmkvInject",
                                     "localhost", str(port), "default", MMKV_ROOT, key, value],
-                                   capture_output=True, text=True, timeout=200)
+                                   capture_output=True, text=True, timeout=120)
                 out = (r.stdout or "") + (r.stderr or "")
             except Exception as e:
                 out = f"[inject ERR] {e}"
