@@ -41,6 +41,103 @@ def adb(*args, timeout=90):
         return "[ERR]"
 
 
+def sdk_home():
+    return (os.environ.get("ANDROID_HOME") or os.environ.get("ANDROID_SDK_ROOT")
+            or "/usr/local/lib/android/sdk")
+
+
+def emu_image_dir():
+    return os.path.join(sdk_home(), "system-images/android-34/google_apis_playstore/x86_64")
+
+
+def adb_root_ok():
+    return adb("shell", "id", timeout=30).strip().startswith("uid=0")
+
+
+def patch_images(imgdir):
+    """在 system 镜像里把 ro.debuggable=0 改成 1（等长字节替换，不动文件系统结构）。"""
+    import mmap
+    subs = [(b"ro.debuggable=0", b"ro.debuggable=1")]
+    if not os.path.isdir(imgdir):
+        print("[root] 镜像目录不存在:", imgdir, flush=True)
+        return False
+    hit_total = 0
+    for name in sorted(os.listdir(imgdir)):
+        if not name.endswith(".img"):
+            continue
+        path = os.path.join(imgdir, name)
+        size = os.path.getsize(path)
+        if size < 1024 or size > 6 * 1024 ** 3:
+            continue
+        try:
+            with open(path, "r+b") as f:
+                mm = mmap.mmap(f.fileno(), 0)
+                cnt = 0
+                for old, new in subs:
+                    pos = 0
+                    while True:
+                        i = mm.find(old, pos)
+                        if i < 0:
+                            break
+                        mm[i:i + len(old)] = new
+                        cnt += 1
+                        pos = i + len(old)
+                mm.flush()
+                mm.close()
+        except Exception as e:
+            print(f"[root] patch {name} 失败: {e}", flush=True)
+            continue
+        if cnt:
+            print(f"[root] patched {name}: {cnt} 处", flush=True)
+            hit_total += cnt
+    print("[root] 替换总数:", hit_total, flush=True)
+    return hit_total > 0
+
+
+def setup_root_jdwp():
+    """给 PlayStore 镜像开 root + 全应用 JDWP（原始签名 APK 才能被 JDWP 注入）"""
+    if adb_root_ok():
+        adb("shell", "setprop", "persist.debug.dalvik.vm.jdwp.enabled", "1")
+        print("[root] 已经是 root", flush=True)
+        return True
+    print("[root] 关模拟器以补丁 system 镜像", flush=True)
+    adb("emu", "kill", timeout=30)
+    time.sleep(4)
+    subprocess.run(["pkill", "-f", "qemu-system"], capture_output=True)
+    time.sleep(4)
+    ok = patch_images(emu_image_dir())
+    if not ok:
+        print("[root] 补丁未命中, 仍然尝试重启", flush=True)
+    emu = os.path.join(sdk_home(), "emulator", "emulator")
+    args = [emu, "-avd", "test", "-no-window", "-gpu", "swiftshader_indirect",
+            "-no-snapshot", "-noaudio", "-no-boot-anim", "-no-metrics", "-port", "5554"]
+    print("[root] 重启模拟器:", " ".join(args), flush=True)
+    log = open("emu2.log", "wb")
+    subprocess.Popen(args, stdout=log, stderr=log, start_new_session=True)
+    boot = "0"
+    for i in range(60):
+        time.sleep(5)
+        boot = adb("shell", "getprop", "sys.boot_completed", timeout=30).strip()
+        if boot == "1":
+            print(f"[root] boot completed ({(i + 1) * 5}s)", flush=True)
+            break
+    if boot != "1":
+        print("[root] 重启后未引导完成, boot=", boot, flush=True)
+        return False
+    print("[root] adb root ->", adb("root", timeout=30).strip(), flush=True)
+    for i in range(15):
+        time.sleep(3)
+        if adb_root_ok():
+            break
+    print("[root] shell id:", adb("shell", "id", timeout=30).strip(), flush=True)
+    adb("shell", "setprop", "persist.debug.dalvik.vm.jdwp.enabled", "1")
+    prop = adb("shell", "getprop", "persist.debug.dalvik.vm.jdwp.enabled", timeout=30).strip()
+    print("[root] persist.debug.dalvik.vm.jdwp.enabled =", prop, flush=True)
+    print("[root] ro.debuggable =",
+          adb("shell", "getprop", "ro.debuggable", timeout=30).strip(), flush=True)
+    return adb_root_ok()
+
+
 def save_proxy():
     """保存 tinyproxy 日志(每阶段调用, 防崩溃丢证据)"""
     try:
@@ -571,13 +668,19 @@ def main():
     os.makedirs(OUT, exist_ok=True)
     mode = sys.argv[1] if len(sys.argv) > 1 else "recon"
     print(f"[main] mode={mode} user={USER} pass={'set' if PASS else 'UNSET'}")
+    # ==== 原始签名 APK + root/JDWP: 保住 Play Integrity 的 appRecognitionVerdict ====
+    root_ok = setup_root_jdwp()
+    print("[main] root/jdwp:", "OK" if root_ok else "FAILED", flush=True)
     adb("shell", "settings", "put", "global", "window_animation_scale", "0")
     adb("shell", "settings", "put", "global", "transition_animation_scale", "0")
     adb("shell", "settings", "put", "global", "animator_duration_scale", "0")
-    print("[install]", adb("install-multiple", "-r", "-g", "fms_patched-aligned-debugSigned.apk",
-                            "cfg_arm64-aligned-debugSigned.apk", "config.en-aligned-debugSigned.apk",
-                            "config.mdpi-aligned-debugSigned.apk",
-                            timeout=600)[:600])
+    print("[install]", adb("install-multiple", "-r", "-g", "--abi", "arm64-v8a", "fms.apk",
+                            "config.arm64_v8a.apk", "config.en.apk", "config.mdpi.apk",
+                            timeout=900)[:600])
+    print("[install] primaryCpuAbi:",
+          adb("shell", "dumpsys package com.nunofacha.fmcs | grep -m2 -E 'primaryCpuAbi|legacyNativeLibraryDir'",
+              timeout=60).strip()[:300], flush=True)
+    print("[install] pm path:", adb("shell", "pm", "path", PKG, timeout=60).strip()[:300], flush=True)
     adb("shell", "monkey", "-p", PKG, "-c", "android.intent.category.LAUNCHER", "1")
     for i in range(10):
         time.sleep(3)

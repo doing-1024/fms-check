@@ -44,6 +44,10 @@ def wait_mmkv(adb, rounds=12, gap=5):
 def inject_device_id(adb, pids, key="deviceId", value=DEV_ID, tries=2):
     """返回 True 表示写入并回读成功"""
     cp = build()
+    try:
+        print("[inject] adb jdwp pids:", " ".join((adb("jdwp") or "").split()), flush=True)
+    except Exception as e:
+        print("[inject] adb jdwp ERR:", e, flush=True)
     for attempt in range(tries):
         for i, pid in enumerate(pids):
             port = 8700 + i
