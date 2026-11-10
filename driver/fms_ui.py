@@ -63,8 +63,8 @@ def sh_out(args, timeout=300):
 
 
 def patch_images(imgdir):
-    """对镜像目录里所有 *.img 做等长字节替换 ro.debuggable=0 -> 1 等，
-    重点在 ramdisk（init 最早读的 prop）而非被 verity 保护的 system.img。"""
+    """对镜像目录里所有 *.img 做等长字节替换：ro.debuggable=0->1, ro.secure=1->0。
+    system.img 受 dm-verity 保护且 mount 失败，故直接扫 ramdisk 等所有 img。"""
     import mmap
     subs = [(b"ro.debuggable=0", b"ro.debuggable=1"),
             (b"ro.secure=1", b"ro.secure=0")]
@@ -86,7 +86,7 @@ def patch_images(imgdir):
         try:
             with open(path, "r+b") as f:
                 mm = mmap.mmap(f.fileno(), 0)
-                for old, new in subs:
+                for old, newv in subs:
                     pos = 0
                     while True:
                         i = mm.find(old, pos)
@@ -94,7 +94,7 @@ def patch_images(imgdir):
                             break
                         print(f"[root] {name}({size},{magic.hex()[:16]}) @{i} "
                               f"hit {old.decode()}", flush=True)
-                        mm[i:i + len(old)] = new
+                        mm[i:i + len(old)] = newv
                         cnt += 1
                         pos = i + len(old)
                 mm.flush()
@@ -107,98 +107,6 @@ def patch_images(imgdir):
             hit_total += cnt
     print("[root] 替换总数:", hit_total, flush=True)
     return hit_total > 0
-
-
-def sdk_home():
-    return (os.environ.get("ANDROID_HOME") or os.environ.get("ANDROID_SDK_ROOT")
-            or "/usr/local/lib/android/sdk")
-
-
-def emu_image_dir():
-    return os.path.join(sdk_home(), "system-images/android-34/google_apis_playstore/x86_64")
-
-
-def adb_root_ok():
-    return adb("shell", "id", timeout=30).strip().startswith("uid=0")
-
-
-def sh_out(args, timeout=300):
-    try:
-        r = subprocess.run(args, capture_output=True, text=True, timeout=timeout)
-        return ((r.stdout or "") + (r.stderr or "")).strip()
-    except Exception as e:
-        return f"[ERR] {e}"
-
-
-def patch_images(imgdir):
-    """用 sudo loop-mount system.img，把 build.prop 的 ro.debuggable 改成 1。
-    先探测镜像格式（sparse / ext4 / erofs）。"""
-    if not os.path.isdir(imgdir):
-        print("[root] 镜像目录不存在:", imgdir, flush=True)
-        return False
-    mount_dir = "/tmp/sysmnt"
-    os.makedirs(mount_dir, exist_ok=True)
-    ok_any = False
-    for name in sorted(os.listdir(imgdir)):
-        if not (name.startswith("system") or name.startswith("vendor")) or not name.endswith(".img"):
-            continue
-        path = os.path.join(imgdir, name)
-        if os.path.getsize(path) < 1024:
-            continue
-        with open(path, "rb") as f:
-            magic = f.read(4)
-        sparse = magic == b"\xed\x26\xff\x3a"
-        print(f"[root] {name} size={os.path.getsize(path)} magic={magic.hex()} sparse={sparse}",
-              flush=True)
-        target = path
-        raw = None
-        if sparse:
-            raw = "/tmp/" + name + ".raw"
-            print("[root] simg2img ->", raw, flush=True)
-            sh_out(["sudo", "apt-get", "install", "-y", "-qq", "android-sdk-libsparse-utils"])
-            print("[root]", sh_out(["simg2img", path, raw])[:300], flush=True)
-            if not os.path.exists(raw):
-                continue
-            target = raw
-        sh_out(["sudo", "umount", "-f", mount_dir])
-        m = sh_out(["sudo", "mount", "-o", "loop,rw", target, mount_dir], timeout=120)
-        mounted = sh_out(["mountpoint", mount_dir]).find("is a mountpoint") >= 0
-        print("[root] mount:", m[:200], "mounted=" + str(mounted), flush=True)
-        if not mounted:
-            continue
-        props = sh_out(["sudo", "find", mount_dir, "-maxdepth", "3", "-name", "*.prop"])[:
-            800]
-        print("[root] prop files:", props, flush=True)
-        hits = sh_out(["sudo", "grep", "-rn", "ro.debuggable", mount_dir, "--include=*.prop"])
-        print("[root] grep ro.debuggable:", hits[:500], flush=True)
-        if "ro.debuggable=0" in hits:
-            print("[root]", sh_out(["sudo", "sed", "-i", "s/^ro.debuggable=0/ro.debuggable=1/",
-                                      *[ln.split(":")[0] for ln in hits.splitlines()
-                                        if "ro.debuggable=0" in ln]])[:200], flush=True)
-            ok_any = True
-        elif "ro.debuggable" not in hits:
-            # 没有该属性: 追加到主 build.prop
-            for cand in ("build.prop", "etc/build.prop", "system/build.prop"):
-                bp = os.path.join(mount_dir, cand)
-                if os.path.exists(bp):
-                    sh_out(["sudo", "sh", "-c", f"echo ro.debuggable=1 >> {bp}"])
-                    print("[root] appended ro.debuggable=1 to", bp, flush=True)
-                    ok_any = True
-                    break
-        print("[root] after patch:", sh_out(["sudo", "grep", "-rn", "ro.debuggable", mount_dir,
-                                              "--include=*.prop"])[:300], flush=True)
-        sh_out(["sudo", "sync"])
-        print("[root] umount:", sh_out(["sudo", "umount", mount_dir])[:200], flush=True)
-        if raw:
-            print("[root] img2simg ->", path, flush=True)
-            sh_out(["sudo", "apt-get", "install", "-y", "-qq", "android-sdk-libsparse-utils"])
-            print("[root]", sh_out(["sudo", "img2simg", raw, image_out := path + ".new"])[:200], flush=True)
-            if os.path.exists(image_out):
-                sh_out(["sudo", "chmod", "666", image_out])
-                print("[root] replace sparse image:", sh_out(
-                    ["sudo", "cp", image_out, path])[:200], flush=True)
-    return ok_any
-
 
 def emu_args(extra=()):
     emu = os.path.join(sdk_home(), "emulator", "emulator")
