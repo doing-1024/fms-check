@@ -20,11 +20,12 @@ PASS = os.environ.get("FMCS_PASS", "")
 
 
 try:
-    from mmkv_inject import inject_device_id, wait_mmkv, DEV_ID
+    from mmkv_inject import inject_device_id, wait_mmkv, DEV_ID, MMKV_ROOT
 except Exception as _e:  # pragma: no cover
     print("[warn] mmkv_inject 不可用:", _e)
     inject_device_id = None
     DEV_ID = ""
+    MMKV_ROOT = f"/data/data/{PKG}/files/mmkv"
 
     def wait_mmkv(*a, **k):
         return False
