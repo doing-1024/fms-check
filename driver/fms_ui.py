@@ -33,8 +33,8 @@ except Exception as _e:  # pragma: no cover
 
 def adb(*args, timeout=90):
     try:
-        r = subprocess.run(["adb", *args], capture_output=True, text=True, timeout=timeout,
-                           stderr=subprocess.STDOUT)
+        r = subprocess.run(["adb", *args], stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                           text=True, timeout=timeout)
         return r.stdout
     except subprocess.TimeoutExpired:
         print(f"[adb] TIMEOUT: {' '.join(args[:3])}")
