@@ -1127,6 +1127,11 @@ def vend_mode():
         time.sleep(3)
     print("[vend] remount:", adb("remount", timeout=300).strip().replace("\n", " | ")[:300],
           flush=True)
+    print("[vend] mounts:", adb("shell", "mount | grep -E ' /(product|system) '", timeout=60
+                                ).replace("\n", " | ")[:300], flush=True)
+    print("[vend] manual remount:", adb("shell", "mount -o remount,rw /product 2>&1; "
+                                               "mount | grep -m1 ' /product '", timeout=120
+                                        ).replace("\n", " | ")[:250], flush=True)
     print("[vend] rm stub:", adb("shell", "rm -rf /product/app/LicenseChecker /system/app/LicenseChecker;"
                                         " ls /product/app/LicenseChecker 2>&1 | head -2",
                                  timeout=120).strip()[:160], flush=True)
@@ -1159,7 +1164,7 @@ def boot_ga(_retry=0):
     time.sleep(2)
     emu = os.path.join(sdk_home(), "emulator", "emulator")
     args = [emu, "-avd", "ga", "-no-window", "-gpu", "swiftshader_indirect", "-no-snapshot",
-            "-noaudio", "-no-boot-anim", "-no-metrics", "-port", "5554"]
+            "-noaudio", "-no-boot-anim", "-no-metrics", "-writable-system", "-port", "5554"]
     print("[ga] boot:", " ".join(args), flush=True)
     with open("ga.log", "wb") as log:
         subprocess.Popen(args, stdout=log, stderr=log, start_new_session=True)
