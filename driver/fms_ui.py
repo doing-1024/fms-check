@@ -54,46 +54,82 @@ def adb_root_ok():
     return adb("shell", "id", timeout=30).strip().startswith("uid=0")
 
 
+def sh_out(args, timeout=300):
+    try:
+        r = subprocess.run(args, capture_output=True, text=True, timeout=timeout)
+        return ((r.stdout or "") + (r.stderr or "")).strip()
+    except Exception as e:
+        return f"[ERR] {e}"
+
+
 def patch_images(imgdir):
-    """在 system 镜像里把 ro.debuggable=0 改成 1（等长字节替换，不动文件系统结构）。"""
-    import mmap
-    subs = [(b"ro.debuggable=0", b"ro.debuggable=1")]
+    """用 sudo loop-mount system.img，把 build.prop 的 ro.debuggable 改成 1。
+    先探测镜像格式（sparse / ext4 / erofs）。"""
     if not os.path.isdir(imgdir):
         print("[root] 镜像目录不存在:", imgdir, flush=True)
         return False
-    hit_total = 0
+    mount_dir = "/tmp/sysmnt"
+    os.makedirs(mount_dir, exist_ok=True)
+    ok_any = False
     for name in sorted(os.listdir(imgdir)):
-        if not name.endswith(".img"):
+        if not (name.startswith("system") or name.startswith("vendor")) or not name.endswith(".img"):
             continue
         path = os.path.join(imgdir, name)
-        size = os.path.getsize(path)
-        if size < 1024 or size > 6 * 1024 ** 3:
+        if os.path.getsize(path) < 1024:
             continue
-        try:
-            with open(path, "r+b") as f:
-                mm = mmap.mmap(f.fileno(), 0)
-                cnt = 0
-                for old, new in subs:
-                    pos = 0
-                    while True:
-                        i = mm.find(old, pos)
-                        if i < 0:
-                            break
-                        ctx = bytes(mm[max(0, i - 40):i + 40])
-                        print(f"[root] {name} @{i}: {ctx!r}", flush=True)
-                        mm[i:i + len(old)] = new
-                        cnt += 1
-                        pos = i + len(old)
-                mm.flush()
-                mm.close()
-        except Exception as e:
-            print(f"[root] patch {name} 失败: {e}", flush=True)
+        with open(path, "rb") as f:
+            magic = f.read(4)
+        sparse = magic == b"\xed\x26\xff\x3a"
+        print(f"[root] {name} size={os.path.getsize(path)} magic={magic.hex()} sparse={sparse}",
+              flush=True)
+        target = path
+        raw = None
+        if sparse:
+            raw = "/tmp/" + name + ".raw"
+            print("[root] simg2img ->", raw, flush=True)
+            sh_out(["sudo", "apt-get", "install", "-y", "-qq", "android-sdk-libsparse-utils"])
+            print("[root]", sh_out(["simg2img", path, raw])[:300], flush=True)
+            if not os.path.exists(raw):
+                continue
+            target = raw
+        sh_out(["sudo", "umount", "-f", mount_dir])
+        m = sh_out(["sudo", "mount", "-o", "loop,rw", target, mount_dir], timeout=120)
+        mounted = sh_out(["mountpoint", mount_dir]).find("is a mountpoint") >= 0
+        print("[root] mount:", m[:200], "mounted=" + str(mounted), flush=True)
+        if not mounted:
             continue
-        if cnt:
-            print(f"[root] patched {name}: {cnt} 处", flush=True)
-            hit_total += cnt
-    print("[root] 替换总数:", hit_total, flush=True)
-    return hit_total > 0
+        props = sh_out(["sudo", "find", mount_dir, "-maxdepth", "3", "-name", "*.prop"])[:
+            800]
+        print("[root] prop files:", props, flush=True)
+        hits = sh_out(["sudo", "grep", "-rn", "ro.debuggable", mount_dir, "--include=*.prop"])
+        print("[root] grep ro.debuggable:", hits[:500], flush=True)
+        if "ro.debuggable=0" in hits:
+            print("[root]", sh_out(["sudo", "sed", "-i", "s/^ro.debuggable=0/ro.debuggable=1/",
+                                      *[ln.split(":")[0] for ln in hits.splitlines()
+                                        if "ro.debuggable=0" in ln]])[:200], flush=True)
+            ok_any = True
+        elif "ro.debuggable" not in hits:
+            # 没有该属性: 追加到主 build.prop
+            for cand in ("build.prop", "etc/build.prop", "system/build.prop"):
+                bp = os.path.join(mount_dir, cand)
+                if os.path.exists(bp):
+                    sh_out(["sudo", "sh", "-c", f"echo ro.debuggable=1 >> {bp}"])
+                    print("[root] appended ro.debuggable=1 to", bp, flush=True)
+                    ok_any = True
+                    break
+        print("[root] after patch:", sh_out(["sudo", "grep", "-rn", "ro.debuggable", mount_dir,
+                                              "--include=*.prop"])[:300], flush=True)
+        sh_out(["sudo", "sync"])
+        print("[root] umount:", sh_out(["sudo", "umount", mount_dir])[:200], flush=True)
+        if raw:
+            print("[root] img2simg ->", path, flush=True)
+            sh_out(["sudo", "apt-get", "install", "-y", "-qq", "android-sdk-libsparse-utils"])
+            print("[root]", sh_out(["sudo", "img2simg", raw, image_out := path + ".new"])[:200], flush=True)
+            if os.path.exists(image_out):
+                sh_out(["sudo", "chmod", "666", image_out])
+                print("[root] replace sparse image:", sh_out(
+                    ["sudo", "cp", image_out, path])[:200], flush=True)
+    return ok_any
 
 
 def setup_root_jdwp():
@@ -146,6 +182,12 @@ def setup_root_jdwp():
         timeout=60).strip()[:400], flush=True)
     print("[root] build.type:", adb("shell", "grep -m1 ro.build.type /system/build.prop",
                                     timeout=30).strip(), flush=True)
+    print("[root] avd imgs:", sh_out(
+        ["bash", "-lc", "ls -la $HOME/.android/avd/test.avd/ 2>/dev/null | grep -E 'img|qcow' | head"]
+    )[:400], flush=True)
+    print("[root] guest propfiles:", adb(
+        "shell", "ls -la /system/build.prop /system/etc/build.prop /vendor/build.prop "
+        "/system/etc/prop.default 2>&1 | head", timeout=30).strip()[:400], flush=True)
     return adb_root_ok()
 
 
