@@ -993,8 +993,12 @@ def push_pristine_libs():
         return False
     adb("shell", "rm", "-rf", "/data/local/tmp/lib64")
     adb("push", dst, "/data/local/tmp/", timeout=600)
-    out = adb("shell", f"dumpsys package {PKG} | grep -m1 legacyNativeLibraryDir", timeout=60).strip()
-    libdir = out.split("=")[-1].strip() if "=" in out else ""
+    out = adb("shell", "ls -d /data/app/*/com.nunofacha.fmcs*/lib 2>/dev/null | head -1",
+              timeout=60).strip()
+    libdir = out.splitlines()[0].strip() if out.strip() else ""
+    print("[libs] full dumpsys:", adb(
+        "shell", f"dumpsys package {PKG} | grep -m2 -e legacyNativeLibraryDir -e primaryCpuAbi",
+        timeout=60).strip()[:300], flush=True)
     print("[libs] legacyNativeLibraryDir =", libdir, flush=True)
     native = libdir.rstrip("/")
     if not native:
@@ -1029,13 +1033,13 @@ def ga_flow():
             break
     if not alive:
         print("[ga] logcat:\n" + adb(
-            "shell", "logcat -d -b all | grep -iE 'nunofacha|SoLoader|AndroidRuntime|am_crash' "
-                      "| tail -25", timeout=120)[:2500], flush=True)
+            "shell", "logcat -d -b all | grep -i -e nunofacha -e SoLoader -e AndroidRuntime "
+                      "-e am_crash -e reactnative | tail -30", timeout=120)[:3000], flush=True)
         save_logcat("ga")
         return False
     print("[ga] App 起来了 ✓ deviceId 日志:", adb(
-        "shell", "logcat -d -b all | grep -m2 -a 'Generated new device ID\|Device ID already'",
-        timeout=120).strip()[:300], flush=True)
+        "shell", "logcat -d -b all | grep -m2 -a -e 'Generated new device ID' "
+                 "-e 'Device ID already'", timeout=120).strip()[:300], flush=True)
     # deviceId 注入
     ok = False
     for round_ in range(2):
