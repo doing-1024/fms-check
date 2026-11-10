@@ -984,6 +984,30 @@ def find_bytes(path, needle=b"Vending.apk", limit=6):
     return hits
 
 
+def find_ext4_before(path, pos, tries=80):
+    """从 pos 向前回溯找最近的 ext4 超级块偏移（mmap.rfind 是 C 级，很快）。"""
+    import mmap
+    res = []
+    try:
+        with open(path, "rb") as f:
+            mm = mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ)
+            end = min(pos, len(mm))
+            for _ in range(tries):
+                i = mm.rfind(b"\x53\xef", 0, end)
+                if i < 0:
+                    break
+                fs = i - 1080
+                if fs > 0 and fs % 512 == 0:
+                    res.append(fs)
+                    print("[fs] ext4 before hit @", fs, flush=True)
+                    return res
+                end = i
+            mm.close()
+    except Exception as ex:
+        print("[fs] rfind err", ex, flush=True)
+    return res
+
+
 def try_mount_partition(img, off, mnt):
     for fstype in ("ext4", "erofs", "f2fs"):
         sh_out(["sudo", "umount", "-f", mnt])
@@ -1013,6 +1037,8 @@ def extract_vending_from_playstore_image():
                 + find_bytes(img, b"com.android.vending", 3))
         print("[vend-scan] byte hits:", hits, flush=True)
         print("[vending] 'Vending.apk' 字节命中位置:", hits, flush=True)
+        for h in hits:
+            cands += find_ext4_before(img, h)
         near = sorted(allc, key=lambda o: min([abs(o - h) for h in hits] or [o]))
         cands += [o for o in near if o not in cands]
         for off in dict.fromkeys(cands):
