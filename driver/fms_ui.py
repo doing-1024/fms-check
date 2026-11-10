@@ -1008,6 +1008,35 @@ def find_ext4_before(path, pos, tries=80):
     return res
 
 
+def find_fs_before(path, pos, tries=200):
+    """从 pos 向前回溯，返回 (fstype, offset) 候选列表（ext4 与 erofs 都找）。"""
+    import mmap
+    res = []
+    try:
+        with open(path, "rb") as f:
+            mm = mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ)
+            for magic, fstype, delta, align in ((b"\xe2\xe1\xf5\xe0", "erofs", 1024, 4096),
+                                                (b"\x53\xef", "ext4", 1080, 512)):
+                end = min(pos, len(mm))
+                found = 0
+                for _ in range(tries):
+                    i = mm.rfind(magic, 0, end)
+                    if i < 0:
+                        break
+                    fs = i - delta
+                    if fs > 0 and fs % align == 0:
+                        res.append((fstype, fs))
+                        print("[fs]", fstype, "before hit @", fs, flush=True)
+                        found += 1
+                        if found >= 2:
+                            break
+                    end = i
+            mm.close()
+    except Exception as ex:
+        print("[fs] rfind err", ex, flush=True)
+    return res
+
+
 def try_mount_partition(img, off, mnt):
     for fstype in ("ext4", "erofs", "f2fs"):
         sh_out(["sudo", "umount", "-f", mnt])
@@ -1019,7 +1048,7 @@ def try_mount_partition(img, off, mnt):
 
 
 def extract_vending_from_playstore_image():
-    """遍历镜像 GPT 分区，逐个尝试挂载，找 Play Store 的 apk。"""
+    """遍历镜像里所有 ext4/erofs 文件系统，找 Play Store 的 apk。"""
     mnt = "/tmp/psimg"
     os.makedirs(mnt, exist_ok=True)
     for name in ("system.img", "vendor.img", "product.img", "system_ext.img"):
@@ -1028,42 +1057,47 @@ def extract_vending_from_playstore_image():
             continue
         parts = gpt_parts(img)
         print(f"[vending] {name} partitions:", [(a, b, n) for a, b, n in parts], flush=True)
-        cands = [(a * 512) for a, b, n in parts]
-        fstype, off = find_fs_offset(img)
-        if fstype:
-            cands.insert(0, off)
-        allc = find_all_ext4(img)
         hits = (find_bytes(img, b"Phonesky.apk", 4) + find_bytes(img, b"Vending.apk", 4)
                 + find_bytes(img, b"com.android.vending", 3))
         print("[vend-scan] byte hits:", hits, flush=True)
-        print("[vending] 'Vending.apk' 字节命中位置:", hits, flush=True)
+        pairs = []
         for h in hits:
-            cands += find_ext4_before(img, h)
-        near = sorted(allc, key=lambda o: min([abs(o - h) for h in hits] or [o]))
-        cands += [o for o in near if o not in cands]
-        for off in dict.fromkeys(cands):
-            mt = try_mount_partition(img, off, mnt)
-            if not mt:
+            pairs += find_fs_before(img, h)
+        # 兜底：分区起点 + 前 64MB 首个 fs + 全盘 ext4 扫描
+        first = find_fs_offset(img)
+        if first[0]:
+            pairs.append(first)
+        for a, b, n in parts:
+            pairs.append(("ext4", a * 512))
+        for c in find_all_ext4(img):
+            pairs.append(("ext4", c))
+        seen = set()
+        for fstype, off in pairs:
+            if (fstype, off) in seen:
                 continue
-            print(f"[vending] {name} mounted {mt} @ {off} ✓", flush=True)
+            seen.add((fstype, off))
+            sh_out(["sudo", "umount", "-f", mnt])
+            sh_out(["sudo", "mount", "-t", fstype, "-o", f"loop,ro,offset={off}", img, mnt],
+                   timeout=240)
+            if sh_out(["mountpoint", mnt]).find("is a mountpoint") < 0:
+                continue
+            print(f"[vending] {name} mounted {fstype} @ {off} ✓", flush=True)
             apks = sh_out(["sudo", "bash", "-lc", f"find {mnt} -name '*.apk' 2>/dev/null"])
             names = {os.path.basename(a).lower(): a for a in apks.splitlines()}
-            hit = [v for k, v in names.items() if k in ("vending.apk", "phonesky.apk", "base.apk")
-                   and ("vending" in v.lower() or "phonesky" in v.lower())]
-            if not hit:
-                hit = [v for k, v in names.items() if k in ("vending.apk", "phonesky.apk")]
+            hit = [v for k, v in names.items() if k in ("vending.apk", "phonesky.apk")]
             print("[vending] apk total:", len(names), "hits:", hit[:6], flush=True)
             if not hit:
-                prv = [a for a in names.values() if "priv-app" in a]
-                print("[vending] priv-app apks:", [os.path.basename(a) for a in prv][:20], flush=True)
+                cand = [a for a in names.values() if "vending" in a.lower() or "phonesky" in a.lower()]
+                print("[vending] name-match:", [os.path.basename(a) for a in cand][:8],
+                      "dirs:", sh_out(["sudo", "bash", "-lc", f"ls {mnt}"]
+                                      ).replace("\n", " ")[:160], flush=True)
+                hit = cand
             if hit:
                 sh_out(["sudo", "cp", hit[0], "/tmp/Vending.apk"])
                 sh_out(["sudo", "chmod", "644", "/tmp/Vending.apk"])
                 print("[vending] size:", os.path.getsize("/tmp/Vending.apk"), flush=True)
                 sh_out(["sudo", "umount", "-f", mnt])
                 return "/tmp/Vending.apk"
-            print("[vending] ls:", sh_out(["sudo", "bash", "-lc", f"ls {mnt}"]
-                                          ).replace("\n", " ")[:300], flush=True)
             sh_out(["sudo", "umount", "-f", mnt])
     return ""
 
