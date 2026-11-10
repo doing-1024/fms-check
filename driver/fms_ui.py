@@ -132,25 +132,24 @@ def patch_images(imgdir):
     return ok_any
 
 
-def setup_root_jdwp():
-    """给 PlayStore 镜像开 root + 全应用 JDWP（原始签名 APK 才能被 JDWP 注入）"""
-    if adb_root_ok():
-        adb("shell", "setprop", "persist.debug.dalvik.vm.jdwp.enabled", "1")
-        print("[root] 已经是 root", flush=True)
-        return True
-    print("[root] 关模拟器以补丁 system 镜像", flush=True)
+def emu_args(extra=()):
+    emu = os.path.join(sdk_home(), "emulator", "emulator")
+    return [emu, "-avd", "test", "-no-window", "-gpu", "swiftshader_indirect",
+            "-no-snapshot", "-noaudio", "-no-boot-anim", "-no-metrics", "-port", "5554",
+            *extra]
+
+
+def stop_emu():
     adb("emu", "kill", timeout=30)
     time.sleep(4)
     subprocess.run(["pkill", "-f", "qemu-system"], capture_output=True)
     time.sleep(4)
-    ok = patch_images(emu_image_dir())
-    if not ok:
-        print("[root] 补丁未命中, 仍然尝试重启", flush=True)
-    emu = os.path.join(sdk_home(), "emulator", "emulator")
-    args = [emu, "-avd", "test", "-no-window", "-gpu", "swiftshader_indirect",
-            "-no-snapshot", "-noaudio", "-no-boot-anim", "-no-metrics", "-port", "5554"]
-    print("[root] 重启模拟器:", " ".join(args), flush=True)
-    log = open("emu2.log", "wb")
+
+
+def boot_emu(extra=(), tag="emu2"):
+    args = emu_args(extra)
+    print("[root] 启动模拟器:", " ".join(args), flush=True)
+    log = open(tag + ".log", "wb")
     subprocess.Popen(args, stdout=log, stderr=log, start_new_session=True)
     boot = "0"
     for i in range(60):
@@ -159,36 +158,41 @@ def setup_root_jdwp():
         if boot == "1":
             print(f"[root] boot completed ({(i + 1) * 5}s)", flush=True)
             break
-    if boot != "1":
-        print("[root] 重启后未引导完成, boot=", boot, flush=True)
-        return False
+    return boot == "1"
+
+
+def setup_root_jdwp():
+    """给 PlayStore 镜像开 root + 全应用 JDWP（原始签名 APK 才能被 JDWP 注入）"""
+    if adb_root_ok():
+        adb("shell", "setprop", "persist.debug.dalvik.vm.jdwp.enabled", "1")
+        print("[root] 已经是 root", flush=True)
+        return True
+    print("[root] 关模拟器，尝试用 -prop 开 ro.debuggable", flush=True)
+    stop_emu()
+    boot_emu(["-prop", "ro.debuggable=1", "-prop", "ro.secure=0",
+              "-prop", "persist.debug.dalvik.vm.jdwp.enabled=1"])
+    for k in ("ro.debuggable", "ro.secure", "persist.debug.dalvik.vm.jdwp.enabled",
+              "ro.build.type"):
+        print(f"[root] getprop {k} =", adb("shell", "getprop", k, timeout=30).strip(), flush=True)
     print("[root] adb root ->", adb("root", timeout=30).strip(), flush=True)
-    for i in range(15):
+    for i in range(10):
         time.sleep(3)
         if adb_root_ok():
             break
-    print("[root] shell id:", adb("shell", "id", timeout=30).strip(), flush=True)
-    adb("shell", "setprop", "persist.debug.dalvik.vm.jdwp.enabled", "1")
-    prop = adb("shell", "getprop", "persist.debug.dalvik.vm.jdwp.enabled", timeout=30).strip()
-    print("[root] persist.debug.dalvik.vm.jdwp.enabled =", prop, flush=True)
-    print("[root] ro.debuggable =",
-          adb("shell", "getprop", "ro.debuggable", timeout=30).strip(), flush=True)
-    print("[root] props:", adb("shell", "getprop | grep -E 'debuggable|ro.secure|ro.build.type'",
-                                timeout=30).strip()[:400], flush=True)
-    print("[root] grep prop files:", adb(
-        "shell",
-        "grep -rn 'ro.debuggable' /system/build.prop /system/etc/prop.default "
-        "/system_ext/build.prop /vendor/build.prop /vendor/default.prop 2>/dev/null | head -5",
-        timeout=60).strip()[:400], flush=True)
-    print("[root] build.type:", adb("shell", "grep -m1 ro.build.type /system/build.prop",
-                                    timeout=30).strip(), flush=True)
-    print("[root] avd imgs:", sh_out(
-        ["bash", "-lc", "ls -la $HOME/.android/avd/test.avd/ 2>/dev/null | grep -E 'img|qcow' | head"]
-    )[:400], flush=True)
-    print("[root] guest propfiles:", adb(
-        "shell", "ls -la /system/build.prop /system/etc/build.prop /vendor/build.prop "
-        "/system/etc/prop.default 2>&1 | head", timeout=30).strip()[:400], flush=True)
-    return adb_root_ok()
+    print("[root] shell id:", adb("shell", "id", timeout=30).strip()[:120], flush=True)
+    if adb_root_ok():
+        adb("shell", "setprop", "persist.debug.dalvik.vm.jdwp.enabled", "1")
+        print("[root] jdwp prop =", adb("shell", "getprop",
+                                       "persist.debug.dalvik.vm.jdwp.enabled").strip(), flush=True)
+        return True
+    print("[root] -prop 无效, dump 诊断", flush=True)
+    print("[root] all props:", adb("shell", "getprop | grep -iE 'debuggable|secure|jdwp'",
+                                   timeout=30).strip()[:400], flush=True)
+    print("[root] guest /system mount:", adb("shell", "mount | grep -E ' /system | /vendor '",
+                                            timeout=30).strip()[:300], flush=True)
+    print("[root] build.prop mode:", adb("shell", "ls -la /system/build.prop",
+                                        timeout=30).strip()[:200], flush=True)
+    return False
 
 
 def save_proxy():
