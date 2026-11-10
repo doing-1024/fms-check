@@ -939,6 +939,31 @@ def find_fs_offset(path, scan=64 * 1024 * 1024):
     return None, 0
 
 
+def find_all_ext4(path, limit=8):
+    """在整块 GPT/super 镜像里找出所有 ext4 超级块偏移（mm.find 快速扫）。"""
+    import mmap
+    offs = []
+    try:
+        with open(path, "rb") as f:
+            mm = mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ)
+            pos = 0
+            while len(offs) < limit:
+                i = mm.find(b"\x53\xef", pos)
+                if i < 0:
+                    break
+                fs = i - 1080
+                if fs > 0 and fs % 512 == 0:
+                    offs.append(fs)
+                    print("[fs] ext4 candidate @", fs, flush=True)
+                    pos = i + 4096 * 64
+                else:
+                    pos = i + 1
+            mm.close()
+    except Exception as ex:
+        print("[fs] scan err", ex, flush=True)
+    return offs
+
+
 def try_mount_partition(img, off, mnt):
     for fstype in ("ext4", "erofs", "f2fs"):
         sh_out(["sudo", "umount", "-f", mnt])
@@ -963,6 +988,7 @@ def extract_vending_from_playstore_image():
         fstype, off = find_fs_offset(img)
         if fstype:
             cands.insert(0, off)
+        cands += find_all_ext4(img)
         for off in dict.fromkeys(cands):
             mt = try_mount_partition(img, off, mnt)
             if not mt:
