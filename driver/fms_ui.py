@@ -939,7 +939,7 @@ def find_fs_offset(path, scan=64 * 1024 * 1024):
     return None, 0
 
 
-def find_all_ext4(path, limit=8):
+def find_all_ext4(path, limit=48):
     """在整块 GPT/super 镜像里找出所有 ext4 超级块偏移（mm.find 快速扫）。"""
     import mmap
     offs = []
@@ -955,13 +955,33 @@ def find_all_ext4(path, limit=8):
                 if fs > 0 and fs % 512 == 0:
                     offs.append(fs)
                     print("[fs] ext4 candidate @", fs, flush=True)
-                    pos = i + 4096 * 64
+                    pos = i + 4096 * 8
                 else:
                     pos = i + 1
             mm.close()
     except Exception as ex:
         print("[fs] scan err", ex, flush=True)
     return offs
+
+
+def find_bytes(path, needle=b"Vending.apk", limit=6):
+    """在原始镜像里找字节串出现的位置（ext4 目录项里的文件名是明文）。"""
+    import mmap
+    hits = []
+    try:
+        with open(path, "rb") as f:
+            mm = mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ)
+            pos = 0
+            while len(hits) < limit:
+                i = mm.find(needle, pos)
+                if i < 0:
+                    break
+                hits.append(i)
+                pos = i + 1
+            mm.close()
+    except Exception as ex:
+        print("[fs] byte scan err", ex, flush=True)
+    return hits
 
 
 def try_mount_partition(img, off, mnt):
@@ -988,7 +1008,11 @@ def extract_vending_from_playstore_image():
         fstype, off = find_fs_offset(img)
         if fstype:
             cands.insert(0, off)
-        cands += find_all_ext4(img)
+        allc = find_all_ext4(img)
+        hits = find_bytes(img)
+        print("[vending] 'Vending.apk' 字节命中位置:", hits, flush=True)
+        near = sorted(allc, key=lambda o: min([abs(o - h) for h in hits] or [o]))
+        cands += [o for o in near if o not in cands]
         for off in dict.fromkeys(cands):
             mt = try_mount_partition(img, off, mnt)
             if not mt:
