@@ -1104,7 +1104,9 @@ def extract_vending_from_playstore_image():
 
 def vend_mode():
     """只做: 从 playstore 镜像抽 Vending.apk 并装成系统应用（独立小实验）。"""
-    boot_ga()
+    if not boot_ga():
+        print("[vend] 模拟器没起来, 终止", flush=True)
+        return False
     v = extract_vending_from_playstore_image()
     print("[vend] vending apk:", v, flush=True)
     if not v:
@@ -1128,7 +1130,7 @@ def vend_mode():
     return True
 
 
-def boot_ga():
+def boot_ga(_retry=0):
     """引导 google_apis(userdebug) 镜像：可用 adb root。"""
     ga_dir = os.path.join(sdk_home(), GA_REL)
     if not os.path.isdir(ga_dir):
@@ -1140,18 +1142,35 @@ def boot_ga():
     adb("emu", "kill", timeout=30)
     time.sleep(4)
     subprocess.run(["pkill", "-f", "qemu-system"], capture_output=True)
-    time.sleep(4)
+    time.sleep(3)
+    adb("kill-server", timeout=60)
+    time.sleep(2)
     emu = os.path.join(sdk_home(), "emulator", "emulator")
     args = [emu, "-avd", "ga", "-no-window", "-gpu", "swiftshader_indirect", "-no-snapshot",
             "-noaudio", "-no-boot-anim", "-no-metrics", "-port", "5554"]
     print("[ga] boot:", " ".join(args), flush=True)
-    log = open("ga.log", "wb")
-    subprocess.Popen(args, stdout=log, stderr=log, start_new_session=True)
-    for i in range(40):
+    with open("ga.log", "wb") as log:
+        subprocess.Popen(args, stdout=log, stderr=log, start_new_session=True)
+    booted = False
+    for i in range(50):
         time.sleep(5)
         if adb("shell", "getprop", "sys.boot_completed", timeout=30).strip() == "1":
             print(f"[ga] boot ok ({(i + 1) * 5}s)", flush=True)
+            booted = True
             break
+        if i % 5 == 4:
+            d = adb("devices", timeout=30)
+            print("[ga] devices:", d.replace("\n", " ")[:150], flush=True)
+            if "offline" in d or "emulator-5554" not in d:
+                adb("kill-server", timeout=60)
+                time.sleep(2)
+                adb("start-server", timeout=60)
+    if not booted:
+        print("[ga] boot FAILED, ga.log 尾部:", flush=True)
+        print(sh_out(["bash", "-lc", "tail -25 ga.log"])[:1500], flush=True)
+        if _retry < 1:
+            return boot_ga(_retry + 1)
+        return False
     print("[ga] adb root ->", adb("root", timeout=40).strip()[:80], flush=True)
     for _ in range(10):
         time.sleep(3)
@@ -1163,9 +1182,8 @@ def boot_ga():
     adb("shell", "setprop", "persist.debug.dalvik.vm.jdwp.enabled", "1")
     print("[ga] jdwp =", adb("shell", "getprop",
                              "persist.debug.dalvik.vm.jdwp.enabled").strip(), flush=True)
-    adb("shell", "settings", "put", "global", "window_animation_scale", "0")
-    adb("shell", "settings", "put", "global", "transition_animation_scale", "0")
-    adb("shell", "settings", "put", "global", "animator_duration_scale", "0")
+    for k in ("window_animation_scale", "transition_animation_scale", "animator_duration_scale"):
+        adb("shell", "settings", "put", "global", k, "0", timeout=60)
     return True
 
 
