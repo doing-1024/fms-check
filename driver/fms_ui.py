@@ -1109,29 +1109,18 @@ def vend_mode():
     print("[vend] vending apk:", v, flush=True)
     if not v:
         return False
-    print("[vend] disable-verity:", adb("disable-verity", timeout=180).strip()[:150], flush=True)
-    adb("reboot", timeout=60)
-    time.sleep(12)
-    for _ in range(24):
-        time.sleep(5)
-        if adb("shell", "getprop", "sys.boot_completed", timeout=30).strip() == "1":
-            break
-    print("[vend] root:", adb("root", timeout=40).strip()[:60], flush=True)
-    time.sleep(5)
-    print("[vend] remount:", adb("remount", timeout=300).strip().replace("\n", " | ")[:400],
+    print("[vend] verifier off:", adb("shell", "settings put global verifier_verify_adb_installs 0; "
+                                       "settings put global package_verifier_enable 0",
+                                     timeout=60).strip()[:80], flush=True)
+    print("[vend] stub path:", adb("shell", "pm path com.android.vending", timeout=60).strip()[:120],
           flush=True)
-    adb("shell", "mkdir -p /system/priv-app/Vending", timeout=60)
-    print("[vend] push:", adb("push", v, "/system/priv-app/Vending/Vending.apk", timeout=600)[:120],
+    print("[vend] uninstall stub:", adb("uninstall", "com.android.vending", timeout=180).strip()[:160],
           flush=True)
-    print("[vend] fix:", adb("shell", "chmod 644 /system/priv-app/Vending/Vending.apk; "
-                                     "restorecon -R /system/priv-app/Vending; df -h /system | tail -1",
-                             timeout=120).strip()[:300], flush=True)
-    adb("reboot", timeout=60)
-    time.sleep(15)
-    for _ in range(24):
-        time.sleep(5)
-        if adb("shell", "getprop", "sys.boot_completed", timeout=30).strip() == "1":
-            break
+    print("[vend] rm stub:", adb("shell", "rm -rf /product/app/LicenseChecker/*.apk /data/app/*vending* "
+                                        "*/*/*vending* 2>/dev/null; echo done", timeout=120).strip()[:100],
+          flush=True)
+    print("[vend] install:", adb("install", "-r", "-g", "-d", v, timeout=1200).strip()[:400],
+          flush=True)
     print("[vend] pm path:", adb("shell", "pm path com.android.vending", timeout=60).strip()[:150],
           flush=True)
     print("[vend] pkgs:", adb("shell", "pm list packages | grep -i -e vending -e gms",
