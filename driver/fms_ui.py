@@ -955,10 +955,21 @@ def extract_vending_from_playstore_image():
             print("[vending] mount failed:", out[:160], flush=True)
             continue
         print(f"[vending] mounted {name} as {fstype} @ {off} ✓", flush=True)
+        print("[vending] ls:", sh_out(["sudo", "bash", "-lc", f"ls {mnt}"]).replace("\n", " ")[:400],
+              flush=True)
+        print("[vending] priv-app:", sh_out(
+            ["sudo", "bash", "-lc", f"ls {mnt}/priv-app {mnt}/product/priv-app "
+                                    f"{mnt}/system_ext/priv-app 2>/dev/null"]).replace("\n", " ")[:600],
+            flush=True)
+        print("[vending] apk count:", sh_out(
+            ["sudo", "bash", "-lc", f"find {mnt} -name '*.apk' 2>/dev/null | wc -l"]).strip(),
+            flush=True)
+        print("[vending] apk sample:", sh_out(
+            ["sudo", "bash", "-lc", f"find {mnt} -name '*.apk' 2>/dev/null | head -12"]
+        ).replace("\n", " ")[:700], flush=True)
         found = sh_out(["sudo", "bash", "-lc",
-                        f"find {mnt} -maxdepth 7 -iname 'Vending.apk' -o -maxdepth 7 "
-                        f"-iname 'Phonesky.apk' -o -maxdepth 7 -iname 'base.apk' "
-                        f"-path '*ending*' 2>/dev/null | head -5"])
+                        f"find {mnt} -iname '*vending*' -o -iname '*Phonesky*' 2>/dev/null "
+                        f"| head -5"])
         print("[vending] found:", found[:400], flush=True)
         if found.strip():
             first = found.strip().splitlines()[0]
