@@ -83,35 +83,45 @@ public class MmkvInject {
             System.out.println("[jdi] breakpoint at " + loc);
 
             ThreadReference thread = null;
+            ClassType ct = null;
             EventQueue q = vm.eventQueue();
-            long deadline = System.currentTimeMillis() + 45000;
+            // 启动期日志很多: 反复命中断点, 但只有 MMKV 类已加载后才能真正注入。
+            // 未加载则 resume 线程继续等下一次命中(总时限 180s)。
+            long deadline = System.currentTimeMillis() + 180000;
+            int hits = 0;
             while (System.currentTimeMillis() < deadline && thread == null) {
                 com.sun.jdi.event.EventSet es = q.remove(2000);
                 if (es == null) continue;
-                boolean hit = false;
+                BreakpointEvent be = null;
                 for (Event ev : es) {
-                    if (ev instanceof BreakpointEvent) {
-                        thread = ((BreakpointEvent) ev).thread();
-                        System.out.println("[jdi] breakpoint hit thread=" + thread.name()
-                                + " suspended=" + thread.isSuspended());
-                        hit = true;
-                    }
+                    if (ev instanceof BreakpointEvent) be = (BreakpointEvent) ev;
                 }
-                if (!hit) es.resume();
+                if (be == null) {
+                    es.resume();
+                    continue;
+                }
+                hits++;
+                if (ct == null) {
+                    List<ReferenceType> t = vm.classesByName(TARGET);
+                    if (!t.isEmpty()) ct = (ClassType) t.get(0);
+                }
+                if (ct == null) {
+                    if (hits <= 3 || hits % 10 == 0) {
+                        System.out.println("[jdi] hit#" + hits + " thread=" + be.thread().name()
+                                + " (MMKV 未加载, 继续等)");
+                    }
+                    es.resume();
+                    continue;
+                }
+                thread = be.thread();
+                System.out.println("[jdi] hit#" + hits + " thread=" + thread.name()
+                        + " suspended=" + thread.isSuspended() + " (MMKV 已加载)");
             }
-            if (thread == null) throw new RuntimeException("no breakpoint hit in 45s");
+            if (thread == null) throw new RuntimeException("no usable breakpoint hit in 180s (hits=" + hits + ")");
 
             bp.disable();
             erm.deleteEventRequest(bp);
             bp = null;
-
-            ClassType ct = null;
-            for (int i = 0; i < 12 && ct == null; i++) {
-                List<ReferenceType> t = vm.classesByName(TARGET);
-                if (!t.isEmpty()) ct = (ClassType) t.get(0);
-                else Thread.sleep(2000);
-            }
-            if (ct == null) throw new RuntimeException("MMKV class not loaded");
 
             // 打印相关方法签名, 便于诊断
             for (Method m : ct.methods()) {
