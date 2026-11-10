@@ -299,6 +299,22 @@ def on_desktop(ns):
                 or find(ns, "play store", "gmail", "photos"))
 
 
+def wait_login_ready(rounds=15, gap=4):
+    """等登录页稳定渲染 (App 空闲时下断点注入更安全)"""
+    for i in range(rounds):
+        if not app_pid():
+            return False
+        ns = dump_ui(f"preinject{i}") and nodes(f"preinject{i}") or []
+        if is_login(ns):
+            print(f"[main] 登录页就绪 (第{i + 1}轮)", flush=True)
+            return True
+        if on_desktop(ns):
+            print("[main] 在桌面, 拉回前台", flush=True)
+            relaunch()
+        time.sleep(gap)
+    return False
+
+
 def crash_forensics():
     print("\n[crash] ===== 崩溃/进程事件 =====", flush=True)
     r = adb("shell",
@@ -577,13 +593,34 @@ def main():
     if inject_device_id:
         print("[main] 等 MMKV 文件就绪...")
         wait_mmkv(adb)
-        pids = (app_pid() or "").split()
-        print("[main] pids =", pids)
-        ok = inject_device_id(adb, pids)
-        print("[main] deviceId 注入:", "OK" if ok else "FAILED")
-        # 注入后确认 App 仍在运行且停在登录页
+        wait_login_ready()
+        ok = False
+        for round_ in range(3):
+            pids = (app_pid() or "").split()
+            print(f"[main] 注入轮次 {round_} pids = {pids}", flush=True)
+            if not pids:
+                print("[main] App 已死, 重新拉起", flush=True)
+                relaunch()
+                wait_login_ready()
+                continue
+            ok = inject_device_id(adb, pids)
+            print("[main] deviceId 注入:", "OK" if ok else "FAILED", flush=True)
+            if ok:
+                break
+            # 注入过程中 App 可能被杀/崩溃, 重新拉起再试
+            print("[main] 注入失败, 重启 App 重试", flush=True)
+            time.sleep(3)
+            relaunch()
+            wait_login_ready()
         time.sleep(3)
         print("[main] pid after inject:", app_pid() or "dead")
+        if ok:
+            # 重启一次 App: 让 C++ 侧 index_cache 与 MMKV 内存状态从磁盘重建
+            print("[main] 注入成功, 重启 App 清缓存", flush=True)
+            relaunch()
+            print("[main] 重启后 pid:", app_pid() or "dead")
+        if not app_pid():
+            relaunch()
     if mode == "full":
         flow_full()
     else:
