@@ -63,6 +63,74 @@ def sh_out(args, timeout=300):
 
 
 def patch_images(imgdir):
+    """对镜像目录里所有 *.img 做等长字节替换 ro.debuggable=0 -> 1 等，
+    重点在 ramdisk（init 最早读的 prop）而非被 verity 保护的 system.img。"""
+    import mmap
+    subs = [(b"ro.debuggable=0", b"ro.debuggable=1"),
+            (b"ro.secure=1", b"ro.secure=0")]
+    if not os.path.isdir(imgdir):
+        print("[root] 镜像目录不存在:", imgdir, flush=True)
+        return False
+    print("[root] 镜像目录内容:", sorted(os.listdir(imgdir))[:40], flush=True)
+    hit_total = 0
+    for name in sorted(os.listdir(imgdir)):
+        if not name.endswith(".img"):
+            continue
+        path = os.path.join(imgdir, name)
+        size = os.path.getsize(path)
+        if size < 1024 or size > 6 * 1024 ** 3:
+            continue
+        with open(path, "rb") as f:
+            magic = f.read(8)
+        cnt = 0
+        try:
+            with open(path, "r+b") as f:
+                mm = mmap.mmap(f.fileno(), 0)
+                for old, new in subs:
+                    pos = 0
+                    while True:
+                        i = mm.find(old, pos)
+                        if i < 0:
+                            break
+                        print(f"[root] {name}({size},{magic.hex()[:16]}) @{i} "
+                              f"hit {old.decode()}", flush=True)
+                        mm[i:i + len(old)] = new
+                        cnt += 1
+                        pos = i + len(old)
+                mm.flush()
+                mm.close()
+        except Exception as e:
+            print(f"[root] patch {name} 失败: {e}", flush=True)
+            continue
+        if cnt:
+            print(f"[root] patched {name}: {cnt} 处", flush=True)
+            hit_total += cnt
+    print("[root] 替换总数:", hit_total, flush=True)
+    return hit_total > 0
+
+
+def sdk_home():
+    return (os.environ.get("ANDROID_HOME") or os.environ.get("ANDROID_SDK_ROOT")
+            or "/usr/local/lib/android/sdk")
+
+
+def emu_image_dir():
+    return os.path.join(sdk_home(), "system-images/android-34/google_apis_playstore/x86_64")
+
+
+def adb_root_ok():
+    return adb("shell", "id", timeout=30).strip().startswith("uid=0")
+
+
+def sh_out(args, timeout=300):
+    try:
+        r = subprocess.run(args, capture_output=True, text=True, timeout=timeout)
+        return ((r.stdout or "") + (r.stderr or "")).strip()
+    except Exception as e:
+        return f"[ERR] {e}"
+
+
+def patch_images(imgdir):
     """用 sudo loop-mount system.img，把 build.prop 的 ro.debuggable 改成 1。
     先探测镜像格式（sparse / ext4 / erofs）。"""
     if not os.path.isdir(imgdir):
@@ -185,7 +253,22 @@ def setup_root_jdwp():
         print("[root] jdwp prop =", adb("shell", "getprop",
                                        "persist.debug.dalvik.vm.jdwp.enabled").strip(), flush=True)
         return True
-    print("[root] -prop 无效, dump 诊断", flush=True)
+    print("[root] -prop 无效, 改补丁镜像后重启", flush=True)
+    stop_emu()
+    ok = patch_images(emu_image_dir())
+    boot_emu([], tag="emu3")
+    for k in ("ro.debuggable", "ro.secure", "ro.build.type"):
+        print(f"[root] after patch getprop {k} =",
+              adb("shell", "getprop", k, timeout=30).strip(), flush=True)
+    print("[root] adb root ->", adb("root", timeout=30).strip(), flush=True)
+    for i in range(10):
+        time.sleep(3)
+        if adb_root_ok():
+            adb("shell", "setprop", "persist.debug.dalvik.vm.jdwp.enabled", "1")
+            print("[root] patch 生效, root OK, jdwp prop =", adb(
+                "shell", "getprop", "persist.debug.dalvik.vm.jdwp.enabled").strip(), flush=True)
+            return True
+    print("[root] patch 无效 (hit=", ok, ") dump 诊断", flush=True)
     print("[root] all props:", adb("shell", "getprop | grep -iE 'debuggable|secure|jdwp'",
                                    timeout=30).strip()[:400], flush=True)
     print("[root] guest /system mount:", adb("shell", "mount | grep -E ' /system | /vendor '",
