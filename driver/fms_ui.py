@@ -79,6 +79,8 @@ def patch_images(imgdir):
                         i = mm.find(old, pos)
                         if i < 0:
                             break
+                        ctx = bytes(mm[max(0, i - 40):i + 40])
+                        print(f"[root] {name} @{i}: {ctx!r}", flush=True)
                         mm[i:i + len(old)] = new
                         cnt += 1
                         pos = i + len(old)
@@ -135,6 +137,15 @@ def setup_root_jdwp():
     print("[root] persist.debug.dalvik.vm.jdwp.enabled =", prop, flush=True)
     print("[root] ro.debuggable =",
           adb("shell", "getprop", "ro.debuggable", timeout=30).strip(), flush=True)
+    print("[root] props:", adb("shell", "getprop | grep -E 'debuggable|ro.secure|ro.build.type'",
+                                timeout=30).strip()[:400], flush=True)
+    print("[root] grep prop files:", adb(
+        "shell",
+        "grep -rn 'ro.debuggable' /system/build.prop /system/etc/prop.default "
+        "/system_ext/build.prop /vendor/build.prop /vendor/default.prop 2>/dev/null | head -5",
+        timeout=60).strip()[:400], flush=True)
+    print("[root] build.type:", adb("shell", "grep -m1 ro.build.type /system/build.prop",
+                                    timeout=30).strip(), flush=True)
     return adb_root_ok()
 
 
