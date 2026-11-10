@@ -743,23 +743,68 @@ def flow_recon(iters=14, gap=6):
     print("[recon] 完成")
 
 
+def pristine_test():
+    """装厂商原始签名四包，看 App 能否在 x86_64 模拟器(ARM 翻译层)上跑起来，
+    并抓 'Generated new device ID' 日志判断 generateRandomString 是否仍返回空串。"""
+    print("[pristine] 安装原始签名四包", flush=True)
+    print("[pristine]", adb("install-multiple", "-r", "-g", "--abi", "arm64-v8a", "fms.apk",
+                            "config.arm64_v8a.apk", "config.en.apk", "config.mdpi.apk",
+                            timeout=900)[:400], flush=True)
+    for pat in ("primaryCpuAbi", "legacyNativeLibraryDir", "codePath"):
+        print(f"[pristine] {pat}:", adb(
+            "shell", f"dumpsys package {PKG} | grep -m2 -E '{pat}'", timeout=60).strip()[:200],
+            flush=True)
+    print("[pristine] lib dir:", adb(
+        "shell", "ls -la $(pm path com.nunofacha.fmcs | head -1 | sed 's/package://;s/base.apk//')lib 2>&1",
+        timeout=60).strip()[:300], flush=True)
+    adb("logcat", "-c", timeout=60)
+    print("[pristine] am start -W:", adb("shell", "am", "start", "-W", "-n",
+                                        PKG + "/.MainActivity", timeout=180).strip()[:600],
+          flush=True)
+    alive = ""
+    for i in range(8):
+        time.sleep(3)
+        alive = app_pid()
+        print(f"[pristine] pid {i}: {alive or 'dead'}", flush=True)
+        if alive:
+            break
+    lg = adb("shell", "logcat -d -b all | grep -iE 'nunofacha|SoLoader|UnsatisfiedLink|"
+                      "AndroidRuntime|FATAL|Generated new device ID|Device ID|libreactnative' "
+                      "| tail -40", timeout=120)
+    print("[pristine] logcat:\n" + lg[:3000], flush=True)
+    print("[pristine] devid log:", adb(
+        "shell", "logcat -d -b all | grep -m3 -a 'Generated new device ID' ; "
+                      "logcat -d -b all | grep -m3 -a 'Device ID already exists'",
+        timeout=120).strip()[:600], flush=True)
+    if alive:
+        print("[pristine] App 存活 ✓", flush=True)
+        return True
+    print("[pristine] App 立刻死亡 ✗", flush=True)
+    save_logcat("pristine")
+    return False
+
+
 def main():
     os.makedirs(OUT, exist_ok=True)
     mode = sys.argv[1] if len(sys.argv) > 1 else "recon"
     print(f"[main] mode={mode} user={USER} pass={'set' if PASS else 'UNSET'}")
-    # ==== 原始签名 APK + root/JDWP: 保住 Play Integrity 的 appRecognitionVerdict ====
-    root_ok = setup_root_jdwp()
-    print("[main] root/jdwp:", "OK" if root_ok else "FAILED", flush=True)
     adb("shell", "settings", "put", "global", "window_animation_scale", "0")
     adb("shell", "settings", "put", "global", "transition_animation_scale", "0")
     adb("shell", "settings", "put", "global", "animator_duration_scale", "0")
+    # ==== 步骤 1: 原始签名 APK 能否运行（决定整条模拟器路线是否可行）====
+    pristine_ok = pristine_test()
+    if pristine_ok and mode != "full":
+        print("[main] recon 模式结束", flush=True)
+        return
+    # ==== 步骤 2: 混编 debuggable 包 + JDWP 注入 deviceId（已验证可用）====
+    print("[main] 装混编 debuggable 包 + JDI 注入", flush=True)
+    print("[main] uninstall pristine:", adb("uninstall", PKG, timeout=120).strip()[:100], flush=True)
     print("[install]", adb("install-multiple", "-r", "-g", "--abi", "arm64-v8a", "fms.apk",
                             "config.arm64_v8a.apk", "config.en.apk", "config.mdpi.apk",
-                            timeout=900)[:600])
-    print("[install] primaryCpuAbi:",
-          adb("shell", "dumpsys package com.nunofacha.fmcs | grep -m2 -E 'primaryCpuAbi|legacyNativeLibraryDir'",
-              timeout=60).strip()[:300], flush=True)
-    print("[install] pm path:", adb("shell", "pm", "path", PKG, timeout=60).strip()[:300], flush=True)
+                            timeout=900)[:300] if False else adb(
+        "install-multiple", "-r", "-g", "fms_patched-aligned-debugSigned.apk",
+        "cfg_arm64-aligned-debugSigned.apk", "config.en-aligned-debugSigned.apk",
+        "config.mdpi-aligned-debugSigned.apk", timeout=900)[:400], flush=True)
     adb("shell", "monkey", "-p", PKG, "-c", "android.intent.category.LAUNCHER", "1")
     for i in range(10):
         time.sleep(3)
@@ -771,7 +816,6 @@ def main():
         print("[!] App 未存活, dump 崩溃日志")
         save_logcat()
         sys.exit(1)
-    # ==== 关键: 用 JDWP 让 App 自己的 MMKV 写入 deviceId ====
     if inject_device_id:
         print("[main] 立刻注入 (App 启动期日志密集, 断点易命中)")
         time.sleep(2)
@@ -787,14 +831,12 @@ def main():
             print("[main] deviceId 注入:", "OK" if ok else "FAILED", flush=True)
             if ok:
                 break
-            # 注入过程中 App 可能被杀/崩溃, 重新拉起再试
             print("[main] 注入失败, 重启 App 重试", flush=True)
             time.sleep(3)
             relaunch()
         time.sleep(3)
         print("[main] pid after inject:", app_pid() or "dead")
         if ok:
-            # 重启一次 App: 让 C++ 侧 index_cache 与 MMKV 内存状态从磁盘重建
             print("[main] 注入成功, 重启 App 清缓存", flush=True)
             relaunch()
             print("[main] 重启后 pid:", app_pid() or "dead")
