@@ -1112,29 +1112,40 @@ def vend_mode():
     print("[vend] vending apk:", v, flush=True)
     if not v:
         return False
-    print("[vend] disable-verity:", adb("disable-verity", timeout=180).strip()[:150], flush=True)
+    def wait_boot(tag, rounds=30):
+        for _ in range(rounds):
+            time.sleep(5)
+            if adb("shell", "getprop", "sys.boot_completed", timeout=30).strip() == "1":
+                print(f"[vend] {tag} boot ok", flush=True)
+                return True
+        print(f"[vend] {tag} boot FAILED", flush=True)
+        return False
+
+    def root_and_remount(tag):
+        adb("root", timeout=60)
+        for _ in range(8):
+            time.sleep(3)
+            if adb_root_ok():
+                break
+        print(f"[vend] {tag} remount:", adb("remount", timeout=300).strip().replace(
+            "\n", " | ")[:200], flush=True)
+
+    print("[vend] disable-verity:", adb("disable-verity", timeout=180).strip()[:120], flush=True)
     adb("reboot", timeout=60)
-    time.sleep(12)
-    for _ in range(30):
-        time.sleep(5)
-        if adb("shell", "getprop", "sys.boot_completed", timeout=30).strip() == "1":
-            break
-    print("[vend] root:", adb("root", timeout=60).strip()[:80], flush=True)
-    time.sleep(4)
-    for _ in range(6):
-        if adb_root_ok():
-            break
-        time.sleep(3)
-    print("[vend] remount:", adb("remount", timeout=300).strip().replace("\n", " | ")[:300],
-          flush=True)
-    print("[vend] mounts:", adb("shell", "mount | grep -E ' /(product|system) '", timeout=60
-                                ).replace("\n", " | ")[:300], flush=True)
-    print("[vend] manual remount:", adb("shell", "mount -o remount,rw /product 2>&1; "
-                                               "mount | grep -m1 ' /product '", timeout=120
-                                        ).replace("\n", " | ")[:250], flush=True)
-    print("[vend] rm stub:", adb("shell", "rm -rf /product/app/LicenseChecker /system/app/LicenseChecker;"
-                                        " ls /product/app/LicenseChecker 2>&1 | head -2",
-                                 timeout=120).strip()[:160], flush=True)
+    wait_boot("reboot1")
+    root_and_remount("reboot1")
+    adb("shell", "rm -rf /product/app/LicenseChecker /system/app/LicenseChecker", timeout=120)
+    print("[vend] use shell-kill trick to force PMS rescan (不重启内核, 保住可写 overlay)", flush=True)
+    adb("shell", "kill -9 $(pidof system_server)", timeout=60)
+    if not wait_boot("fwrestart", rounds=36):
+        adb("reboot", timeout=60)
+        wait_boot("reboot2")
+        root_and_remount("reboot2")
+        adb("shell", "rm -rf /product/app/LicenseChecker /system/app/LicenseChecker", timeout=120)
+    print("[vend] stub after restart:", adb(
+        "shell", "ls /product/app/LicenseChecker 2>&1 | head -1; "
+                 "pm path com.android.vending 2>&1 | head -2", timeout=90).replace(
+        "\n", " | ")[:200], flush=True)
     print("[vend] verifier off:", adb("shell", "settings put global verifier_verify_adb_installs 0; "
                                        "settings put global package_verifier_enable 0",
                                      timeout=60).strip()[:80], flush=True)
