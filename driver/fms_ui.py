@@ -1009,7 +1009,9 @@ def extract_vending_from_playstore_image():
         if fstype:
             cands.insert(0, off)
         allc = find_all_ext4(img)
-        hits = find_bytes(img)
+        hits = (find_bytes(img, b"Phonesky.apk", 4) + find_bytes(img, b"Vending.apk", 4)
+                + find_bytes(img, b"com.android.vending", 3))
+        print("[vend-scan] byte hits:", hits, flush=True)
         print("[vending] 'Vending.apk' 字节命中位置:", hits, flush=True)
         near = sorted(allc, key=lambda o: min([abs(o - h) for h in hits] or [o]))
         cands += [o for o in near if o not in cands]
@@ -1019,9 +1021,15 @@ def extract_vending_from_playstore_image():
                 continue
             print(f"[vending] {name} mounted {mt} @ {off} ✓", flush=True)
             apks = sh_out(["sudo", "bash", "-lc", f"find {mnt} -name '*.apk' 2>/dev/null"])
-            hit = [a for a in apks.splitlines() if "ending" in a.lower() or "phonesky" in a.lower()
-                   or "play" in a.lower().split("/")[-1]]
-            print("[vending] apk total:", len(apks.splitlines()), "hits:", hit[:6], flush=True)
+            names = {os.path.basename(a).lower(): a for a in apks.splitlines()}
+            hit = [v for k, v in names.items() if k in ("vending.apk", "phonesky.apk", "base.apk")
+                   and ("vending" in v.lower() or "phonesky" in v.lower())]
+            if not hit:
+                hit = [v for k, v in names.items() if k in ("vending.apk", "phonesky.apk")]
+            print("[vending] apk total:", len(names), "hits:", hit[:6], flush=True)
+            if not hit:
+                prv = [a for a in names.values() if "priv-app" in a]
+                print("[vending] priv-app apks:", [os.path.basename(a) for a in prv][:20], flush=True)
             if hit:
                 sh_out(["sudo", "cp", hit[0], "/tmp/Vending.apk"])
                 sh_out(["sudo", "chmod", "644", "/tmp/Vending.apk"])
