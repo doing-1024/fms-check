@@ -1313,15 +1313,35 @@ def boot_ga(_retry=0):
     """引导 google_apis(userdebug) 镜像：可用 adb root。"""
     ga_dir = os.path.join(sdk_home(), GA_REL)
     need = ("kernel-ranchu", "system.img", "ramdisk.img", "build.prop", "userdata.img")
-    for attempt in range(3):
-        if os.path.isdir(ga_dir) and all(os.path.exists(os.path.join(ga_dir, n)) for n in need):
+
+    def complete():
+        return (os.path.isdir(ga_dir)
+                and all(os.path.exists(os.path.join(ga_dir, n)) for n in need))
+
+    warped = "warp" in sh_out(["bash", "-lc", "warp-cli --accept-tos status 2>&1 || true"]).lower()
+    for attempt in range(5):
+        if complete():
             break
-        if os.path.isdir(ga_dir):
-            print("[ga] 镜像不完整, 重建:", sorted(os.listdir(ga_dir))[:12], flush=True)
-            shutil.rmtree(ga_dir, ignore_errors=True)
+        if attempt == 2 and warped:
+            # 经 WARP 时 sdkmanager 下载常被截断; 临时断开直连下载
+            print("[ga] 断开 WARP 以直连下载系统镜像", flush=True)
+            sh_out(["bash", "-lc", "sudo warp-cli --accept-tos disconnect 2>&1 | tail -2"])
+            time.sleep(6)
+        if attempt:
+            print(f"[ga] 镜像不完整(第{attempt}次重试), 现有:",
+                  sorted(os.listdir(ga_dir))[:10] if os.path.isdir(ga_dir) else "missing", flush=True)
         sdk_install_pkg("system-images;android-34;google_apis;x86_64")
-        time.sleep(3)
-    if not (os.path.isdir(ga_dir) and all(os.path.exists(os.path.join(ga_dir, n)) for n in need)):
+        time.sleep(4)
+    if warped:
+        sh_out(["bash", "-lc", "sudo warp-cli --accept-tos connect 2>&1 | tail -2"])
+        time.sleep(10)
+        print("[ga] WARP 恢复:", sh_out(["bash", "-lc", "warp-cli --accept-tos status 2>&1 | tail -2"]
+                                       ).replace("\n", " ")[:120], flush=True)
+        print("[ga] egress:", sh_out(["bash", "-lc",
+                                      "curl -s -m 20 -o /dev/null -w '%{http_code}' "
+                                      "https://api.freemcserver.net/v4/app-settings/credits"]).strip(),
+              flush=True)
+    if not complete():
         print("[ga] 镜像缺失/不完整, 放弃:", sorted(os.listdir(ga_dir))[:12]
               if os.path.isdir(ga_dir) else "missing", flush=True)
         return False
