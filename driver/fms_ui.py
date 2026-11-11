@@ -1296,10 +1296,18 @@ def vend_mode():
 def boot_ga(_retry=0):
     """引导 google_apis(userdebug) 镜像：可用 adb root。"""
     ga_dir = os.path.join(sdk_home(), GA_REL)
-    if not os.path.isdir(ga_dir):
+    need = ("kernel-ranchu", "system.img", "ramdisk.img", "build.prop", "userdata.img")
+    for attempt in range(3):
+        if os.path.isdir(ga_dir) and all(os.path.exists(os.path.join(ga_dir, n)) for n in need):
+            break
+        if os.path.isdir(ga_dir):
+            print("[ga] 镜像不完整, 重建:", sorted(os.listdir(ga_dir))[:12], flush=True)
+            shutil.rmtree(ga_dir, ignore_errors=True)
         sdk_install_pkg("system-images;android-34;google_apis;x86_64")
-    if not os.path.isdir(ga_dir):
-        print("[ga] 镜像不存在, 放弃", flush=True)
+        time.sleep(3)
+    if not (os.path.isdir(ga_dir) and all(os.path.exists(os.path.join(ga_dir, n)) for n in need)):
+        print("[ga] 镜像缺失/不完整, 放弃:", sorted(os.listdir(ga_dir))[:12]
+              if os.path.isdir(ga_dir) else "missing", flush=True)
         return False
     make_avd("ga", GA_REL)
     adb("emu", "kill", timeout=30)
