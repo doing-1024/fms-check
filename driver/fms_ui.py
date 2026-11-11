@@ -369,6 +369,11 @@ def shot(tag):
         print(f"[shot] {tag} failed: {e}")
 
 
+def app_pid_of(pkg):
+    out = adb("shell", f"pidof {pkg}", timeout=60).strip()
+    return out.split()[0] if out and out.split() and out.split()[0].isdigit() else ""
+
+
 def app_pid():
     return adb("shell", "pidof", PKG).strip()
 
@@ -1190,6 +1195,16 @@ def extract_vending_from_playstore_image():
                 sh_out(["sudo", "cp", hit[0], "/tmp/Vending.apk"])
                 sh_out(["sudo", "chmod", "644", "/tmp/Vending.apk"])
                 print("[vending] size:", os.path.getsize("/tmp/Vending.apk"), flush=True)
+                # 特权权限白名单：Finsky 需要 MANAGE_USERS/CREATE_USERS 等 signature|privileged 权限
+                os.makedirs("/tmp/vperm", exist_ok=True)
+                sh_out(["sudo", "bash", "-lc",
+                        f"grep -l -s 'com.android.vending' {mnt}/etc/permissions/*.xml "
+                        f"{mnt}/etc/sysconfig/*.xml {mnt}/etc/default-permissions/*.xml 2>/dev/null "
+                        f"| while read f; do cp \"$f\" /tmp/vperm/; done; "
+                        f"cp -s {mnt}/etc/permissions/privapp-permissions-google*.xml /tmp/vperm/ 2>/dev/null; "
+                        f"ls /tmp/vperm", ], timeout=180)
+                got = os.listdir("/tmp/vperm") if os.path.isdir("/tmp/vperm") else []
+                print("[vending] perms xml:", got[:12], flush=True)
                 sh_out(["sudo", "umount", "-f", mnt])
                 return "/tmp/Vending.apk"
             sh_out(["sudo", "umount", "-f", mnt])
@@ -1229,17 +1244,46 @@ def playstore_prepare():
         return False
     root_and_remount("reboot1")
     adb("shell", "rm -rf /product/app/LicenseChecker /system/app/LicenseChecker", timeout=120)
-    adb("shell", "kill -9 $(pidof system_server)", timeout=60)
-    wait_boot("fwrestart")
-    print("[ps] stub:", adb("shell", "ls /product/app/LicenseChecker 2>&1 | head -1; "
-                                   "pm path com.android.vending 2>&1 | head -1", timeout=90
-                            ).replace("\n", " | ")[:180], flush=True)
+    adb("shell", "rm -rf /data/app/*com.android.vending* /data/data/com.android.vending", timeout=120)
+    # 装成 priv-app: Finsky 需要 MANAGE_USERS/CREATE_USERS 等 signature|privileged 权限
+    adb("shell", "mkdir -p /system/priv-app/Phonesky", timeout=60)
+    print("[ps] push:", adb("push", v, "/system/priv-app/Phonesky/Phonesky.apk", timeout=900
+                            ).strip()[-160:], flush=True)
+    adb("shell", "chmod 644 /system/priv-app/Phonesky/Phonesky.apk; "
+                 "chown root:root /system/priv-app/Phonesky/Phonesky.apk", timeout=60)
+    adb("remount", timeout=300)
+    permdir = "/tmp/vperm" if os.path.isdir("/tmp/vperm") else ""
+    if permdir:
+        xmls = [os.path.join(permdir, f) for f in os.listdir(permdir) if f.endswith(".xml")]
+        adb("shell", "mkdir -p /system/etc/permissions /system/etc/sysconfig", timeout=60)
+        for x in xmls:
+            base = os.path.basename(x)
+            target = ("/system/etc/sysconfig/" if "sysconfig" in base or "default-permission" in base
+                      else "/system/etc/permissions/") + base
+            print("[ps] perms ->", target, flush=True)
+            adb("push", x, target, timeout=180)
+        adb("shell", "chmod 644 /system/etc/permissions/*.xml /system/etc/sysconfig/*.xml 2>/dev/null; "
+                     "restorecon -R /system/priv-app/Phonesky /system/etc/permissions /system/etc/sysconfig",
+            timeout=180)
     adb("shell", "settings put global verifier_verify_adb_installs 0; "
                  "settings put global package_verifier_enable 0", timeout=60)
-    print("[ps] install:", adb("install", "-r", "-g", "-d", v, timeout=900).strip()[:300], flush=True)
+    adb("shell", "kill -9 $(pidof system_server)", timeout=60)
+    wait_boot("fwrestart")
     print("[ps] pm path:", adb("shell", "pm path com.android.vending", timeout=60).strip()[:200],
           flush=True)
-    return "com.android.vending" in adb("shell", "pm path com.android.vending", timeout=60)
+    print("[ps] granted:", adb("shell", "dumpsys package com.android.vending | "
+                                        "grep -c -e MANAGE_USERS -e CREATE_USERS", timeout=90
+                               ).strip()[:60], flush=True)
+    # 探活: 启动 Play Store 看是否还崩
+    adb("shell", "monkey -p com.android.vending -c android.intent.category.LAUNCHER 1",
+        timeout=120)
+    time.sleep(12)
+    alive = app_pid_of("com.android.vending")
+    print("[ps] vending alive:", alive, flush=True)
+    if not alive:
+        print("[ps] crash:", adb("shell", "logcat -d -b crash | tail -25", timeout=120)[-2500:],
+              flush=True)
+    return bool(alive)
 
 
 def vend_mode():
