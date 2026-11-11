@@ -529,13 +529,51 @@ def login_once(dump_prefix="lg"):
     time.sleep(0.5)
     dump_ui("login_ready")
     shot("login_ready")
+    def close_ime():
+        """软键盘会挡住 Sign In, 必须真的关掉 (ESC 常被 IME 忽略, 用 BACK 并校验)。"""
+        for _ in range(4):
+            st = adb("shell", "dumpsys input_method | grep -m1 mInputShown", timeout=30)
+            if "mInputShown=true" not in st:
+                return True
+            adb("shell", "input keyevent 4", timeout=30)
+            time.sleep(1.5)
+        return False
+
     def submit(tag, label):
-        adb("shell", "input keyevent 111", timeout=30)
-        time.sleep(0.8)
+        print("[login] IME 关闭:", close_ime(), flush=True)
+        time.sleep(0.6)
+        if not app_pid():
+            print("[login] 进程死了, 重新拉起", flush=True)
+            relaunch()
+            return False
         dump_ui(tag)
         nsx = nodes(tag)
-        print("[login] IME:", adb("shell", "dumpsys input_method | grep -m1 mInputShown",
-                                 timeout=30).strip()[:80], flush=True)
+        if not is_login(nsx):
+            print("[login] BACK 把 Activity 退了, 拉回前台", flush=True)
+            adb("shell", f"monkey -p {PKG} -c android.intent.category.LAUNCHER 1")
+            time.sleep(6)
+            return False
+        ets = [n for n in nsx if "EditText" in n["cls"]]
+        uv = ets[0]["text"] if ets else ""
+        pv = ets[1]["text"] if len(ets) > 1 else ""
+        print(f"[login] 提交前 user={uv!r} pass={'SET' if pv not in ('', 'Password') else 'EMPTY'}",
+              flush=True)
+        if (not uv or uv == "Username") and ets:
+            print("[login] 用户名空, 重填", flush=True)
+            input_text(ets[0], USER, tag + "_u", "Username")
+            close_ime()
+            time.sleep(1)
+            dump_ui(tag)
+            nsx = nodes(tag)
+        if len([n for n in nsx if "EditText" in n["cls"]]) > 1:
+            e2 = [n for n in nsx if "EditText" in n["cls"]][1]
+            if e2["text"] in ("", "Password"):
+                print("[login] 密码空, 重填", flush=True)
+                input_text(e2, PASS, tag + "_p", "Password", secure=True)
+                close_ime()
+                time.sleep(1)
+                dump_ui(tag)
+                nsx = nodes(tag)
         b = find(nsx, "sign in")
         if not b:
             print("[login] 未找到 Sign In")
