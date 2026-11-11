@@ -1160,7 +1160,9 @@ def extract_vending_from_playstore_image():
         parts = gpt_parts(img)
         print(f"[vending] {name} partitions:", [(a, b, n) for a, b, n in parts], flush=True)
         hits = (find_bytes(img, b"Phonesky.apk", 4) + find_bytes(img, b"Vending.apk", 4)
-                + find_bytes(img, b"com.android.vending", 3))
+                + find_bytes(img, b"com.android.vending", 3)
+                + find_bytes(img, b"GmsCore.apk", 4)
+                + find_bytes(img, b"GoogleServicesFramework", 2))
         print("[vend-scan] byte hits:", hits, flush=True)
         pairs = []
         for h in hits:
@@ -1186,6 +1188,17 @@ def extract_vending_from_playstore_image():
             print(f"[vending] {name} mounted {fstype} @ {off} ✓", flush=True)
             apks = sh_out(["sudo", "bash", "-lc", f"find {mnt} -name '*.apk' 2>/dev/null"])
             names = {os.path.basename(a).lower(): a for a in apks.splitlines()}
+            if not os.path.exists("/tmp/GmsCore.apk"):
+                g = [v for k, v in names.items() if "gms" in k]
+                if g:
+                    sh_out(["sudo", "cp", g[0], "/tmp/GmsCore.apk"])
+                    sh_out(["sudo", "chmod", "644", "/tmp/GmsCore.apk"])
+                    print("[vending] gms ->", g[0], os.path.getsize("/tmp/GmsCore.apk"), flush=True)
+                gs = [v for k, v in names.items() if "gsf" in k or "googleservicesframework" in k]
+                if gs and not os.path.exists("/tmp/GSF.apk"):
+                    sh_out(["sudo", "cp", gs[0], "/tmp/GSF.apk"])
+                    sh_out(["sudo", "chmod", "644", "/tmp/GSF.apk"])
+                    print("[vending] gsf ->", gs[0], os.path.getsize("/tmp/GSF.apk"), flush=True)
             hit = [v for k, v in names.items() if k in ("vending.apk", "phonesky.apk")]
             print("[vending] apk total:", len(names), "hits:", hit[:6], flush=True)
             if not hit:
@@ -1306,6 +1319,11 @@ def playstore_prepare():
     adb("shell", "monkey -p com.android.vending -c android.intent.category.LAUNCHER 1",
         timeout=120)
     time.sleep(12)
+    print("[ps] gpkgs:", adb("shell", "pm list packages | grep -i -e google -e gsf -e vending "
+                                     "| tr '\n' ' '", timeout=120).strip()[:500], flush=True)
+    print("[ps] gms det:", adb("shell", "dumpsys package com.google.android.gms | "
+                                        "grep -m4 -e versionName -e versionCode -e pkgFlags -e enabled=",
+                               timeout=120).strip().replace("\n", " | ")[:300], flush=True)
     print("[ps] gms ver:", adb("shell", "dumpsys package com.google.android.gms | "
                                        "grep -m1 versionName", timeout=120).strip()[:80], flush=True)
     if os.path.exists("/tmp/GmsCore.apk"):
