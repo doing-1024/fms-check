@@ -1252,19 +1252,35 @@ def playstore_prepare():
     adb("shell", "chmod 644 /system/priv-app/Phonesky/Phonesky.apk; "
                  "chown root:root /system/priv-app/Phonesky/Phonesky.apk", timeout=60)
     adb("remount", timeout=300)
-    permdir = "/tmp/vperm" if os.path.isdir("/tmp/vperm") else ""
-    if permdir:
-        xmls = [os.path.join(permdir, f) for f in os.listdir(permdir) if f.endswith(".xml")]
-        adb("shell", "mkdir -p /system/etc/permissions /system/etc/sysconfig", timeout=60)
-        for x in xmls:
-            base = os.path.basename(x)
-            target = ("/system/etc/sysconfig/" if "sysconfig" in base or "default-permission" in base
-                      else "/system/etc/permissions/") + base
-            print("[ps] perms ->", target, flush=True)
-            adb("push", x, target, timeout=180)
-        adb("shell", "chmod 644 /system/etc/permissions/*.xml /system/etc/sysconfig/*.xml 2>/dev/null; "
-                     "restorecon -R /system/priv-app/Phonesky /system/etc/permissions /system/etc/sysconfig",
-            timeout=180)
+    # 只取 com.android.vending 的 privapp 白名单块, 单独成文件(覆盖 google.xml 会破坏 framework)
+    block = ""
+    permdir = "/tmp/vperm"
+    if os.path.isdir(permdir):
+        for f in sorted(os.listdir(permdir)):
+            if not f.endswith(".xml"):
+                continue
+            try:
+                txt = open(os.path.join(permdir, f), errors="ignore").read()
+            except Exception:
+                continue
+            m = re.search(r'<privapp-permissions\s+package="com\.android\.vending"[^>]*>.*?</privapp-permissions>',
+                          txt, re.S)
+            if m:
+                print("[ps] 白名单来源:", f, len(m.group(0)), flush=True)
+                block = m.group(0)
+                break
+    if block:
+        out = "/tmp/vend_privapp.xml"
+        with open(out, "w") as fh:
+            fh.write('<?xml version="1.0" encoding="utf-8"?>\n<permissions>\n' + block + '\n</permissions>\n')
+        adb("shell", "mkdir -p /system/etc/permissions", timeout=60)
+        print("[ps] perms -> /system/etc/permissions/privapp-permissions-com.android.vending.xml",
+              adb("push", out, "/system/etc/permissions/privapp-permissions-com.android.vending.xml",
+                  timeout=180).strip()[-80:], flush=True)
+        adb("shell", "chmod 644 /system/etc/permissions/privapp-permissions-com.android.vending.xml; "
+                     "restorecon -R /system/priv-app/Phonesky /system/etc/permissions", timeout=180)
+    else:
+        print("[ps] 未拿到 vending 白名单块, 继续尝试", flush=True)
     adb("shell", "settings put global verifier_verify_adb_installs 0; "
                  "settings put global package_verifier_enable 0", timeout=60)
     adb("shell", "kill -9 $(pidof system_server)", timeout=60)
