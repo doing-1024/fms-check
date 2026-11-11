@@ -1279,6 +1279,7 @@ def playstore_prepare():
     adb("remount", timeout=300)
     # 只取 com.android.vending 的 privapp 白名单块, 单独成文件(覆盖 google.xml 会破坏 framework)
     block = ""
+    seenpkg = set()
     permdir = "/tmp/vperm"
     if os.path.isdir(permdir):
         for f in sorted(os.listdir(permdir)):
@@ -1288,12 +1289,17 @@ def playstore_prepare():
                 txt = open(os.path.join(permdir, f), errors="ignore").read()
             except Exception:
                 continue
-            m = re.search(r'<privapp-permissions\s+package="com\.android\.vending"[^>]*>.*?</privapp-permissions>',
-                          txt, re.S)
-            if m:
-                print("[ps] 白名单来源:", f, len(m.group(0)), flush=True)
-                block = m.group(0)
-                break
+            for blk in re.findall(r'<privapp-permissions\s+package="[^"]+"[^>]*>.*?</privapp-permissions>',
+                                  txt, re.S):
+                pm = re.search(r'package="([^"]+)"', blk)
+                if not pm:
+                    continue
+                pkg = pm.group(1)
+                if pkg in ("com.android.vending", "com.google.android.gms",
+                           "com.google.android.gsf") and pkg not in seenpkg:
+                    seenpkg.add(pkg)
+                    block += blk + "\n"
+                    print("[ps] 白名单:", pkg, "来自", f, len(blk), flush=True)
     if block:
         out = "/tmp/vend_privapp.xml"
         with open(out, "w") as fh:
@@ -1321,17 +1327,33 @@ def playstore_prepare():
     time.sleep(12)
     print("[ps] gpkgs:", adb("shell", "pm list packages | grep -i -e google -e gsf -e vending "
                                      "| tr '\n' ' '", timeout=120).strip()[:500], flush=True)
+    print("[ps] gsf:", adb("shell", "pm path com.google.android.gsf", timeout=90
+                           ).strip().replace("\n", " ")[:120], flush=True)
     print("[ps] gms det:", adb("shell", "dumpsys package com.google.android.gms | "
                                         "grep -m4 -e versionName -e versionCode -e pkgFlags -e enabled=",
                                timeout=120).strip().replace("\n", " | ")[:300], flush=True)
     print("[ps] gms ver:", adb("shell", "dumpsys package com.google.android.gms | "
                                        "grep -m1 versionName", timeout=120).strip()[:80], flush=True)
     if os.path.exists("/tmp/GmsCore.apk"):
-        print("[ps] gms install:", adb("install", "-r", "-g", "-d", "/tmp/GmsCore.apk",
-                                       timeout=900).strip()[-200:], flush=True)
-        print("[ps] gms ver after:", adb("shell", "dumpsys package com.google.android.gms | "
-                                                "grep -m1 versionName", timeout=120).strip()[:80],
-              flush=True)
+        print("[ps] old gms:", adb("shell", "pm path com.google.android.gms; "
+                                            "pm path com.google.android.gsf",
+                                   timeout=90).strip().replace("\n", " ")[:160], flush=True)
+        adb("shell", "rm -rf /system/priv-app/PrebuiltGmsCore /product/priv-app/PrebuiltGmsCore "
+                     "/system/priv-app/GmsCore /product/priv-app/GmsCore "
+                     "/system/priv-app/GoogleServicesFramework", timeout=180)
+        adb("shell", "mkdir -p /system/priv-app/PrebuiltGmsCore /system/priv-app/GoogleServicesFramework",
+            timeout=60)
+        print("[ps] push gms:", adb("push", "/tmp/GmsCore.apk",
+                                    "/system/priv-app/PrebuiltGmsCore/PrebuiltGmsCore.apk",
+                                    timeout=900).strip()[-120:], flush=True)
+        if os.path.exists("/tmp/GSF.apk"):
+            print("[ps] push gsf:", adb("push", "/tmp/GSF.apk",
+                                        "/system/priv-app/GoogleServicesFramework/"
+                                        "GoogleServicesFramework.apk",
+                                        timeout=300).strip()[-120:], flush=True)
+        adb("shell", "chmod 644 /system/priv-app/PrebuiltGmsCore/PrebuiltGmsCore.apk "
+                     "/system/priv-app/GoogleServicesFramework/*.apk 2>/dev/null; "
+                     "restorecon -R /system/priv-app /system/etc/permissions", timeout=180)
     alive = app_pid_of("com.android.vending")
     print("[ps] vending alive:", alive, flush=True)
     if not alive:
@@ -1409,7 +1431,7 @@ def boot_ga(_retry=0):
         print("[ga] 镜像缺失/不完整, 放弃:", sorted(os.listdir(ga_dir))[:12]
               if os.path.isdir(ga_dir) else "missing", flush=True)
         return False
-    make_avd("ga", GA_REL)
+    make_avd("ga", GA_REL, mem=4096)
     adb("emu", "kill", timeout=30)
     time.sleep(4)
     subprocess.run(["pkill", "-f", "qemu-system"], capture_output=True)
