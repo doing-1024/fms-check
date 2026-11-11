@@ -907,9 +907,12 @@ def sdk_install_pkg(pkg):
     print("[sdk] install", pkg, flush=True)
     r = subprocess.run([sd, "--install", pkg], input="y\n" * 40, capture_output=True,
                        text=True, timeout=1500, env=env)
-    tail = ((r.stdout or "") + (r.stderr or ""))[-500:]
-    print("[sdk] ->", tail.replace("\n", " | ")[:500], flush=True)
-    return "100%" in (r.stdout or "") or True
+    txt = ((r.stdout or "") + (r.stderr or "")).replace("\r", "\n")
+    lines = [ln.strip() for ln in txt.splitlines() if ln.strip()]
+    print(f"[sdk] rc={r.returncode} lines={len(lines)}", flush=True)
+    for ln in lines[-8:]:
+        print("[sdk]", ln[:220], flush=True)
+    return r.returncode == 0
 
 
 def make_avd(name, sysdir_rel, w=1080, h=2340, mem=3072):
@@ -1318,7 +1321,9 @@ def boot_ga(_retry=0):
         return (os.path.isdir(ga_dir)
                 and all(os.path.exists(os.path.join(ga_dir, n)) for n in need))
 
-    warped = "warp" in sh_out(["bash", "-lc", "warp-cli --accept-tos status 2>&1 || true"]).lower()
+    wst = sh_out(["bash", "-lc", "warp-cli --accept-tos status 2>&1 || true"]).lower()
+    warped = "connect" in wst and "disconnect" not in wst
+    print("[ga] warp status:", wst.replace("\n", " ")[:100], flush=True)
     for attempt in range(5):
         if complete():
             break
@@ -1341,6 +1346,30 @@ def boot_ga(_retry=0):
                                       "curl -s -m 20 -o /dev/null -w '%{http_code}' "
                                       "https://api.freemcserver.net/v4/app-settings/credits"]).strip(),
               flush=True)
+    if not complete():
+        print("[ga] sdkmanager 失败, 尝试直连下载 sys-img zip", flush=True)
+        for rv in ("07", "06", "08", "05", "09", "10"):
+            url = ("https://dl.google.com/android/repository/sys-img/google_apis/"
+                   f"x86_64-34_r{rv}.zip")
+            code = sh_out(["bash", "-lc",
+                           f"curl -sIL -m 25 -o /dev/null -w '%{{http_code}}' '{url}'"]).strip()
+            print(f"[ga] probe r{rv}: {code}", flush=True)
+            if code != "200":
+                continue
+            z = "/tmp/ga.zip"
+            for t in range(40):
+                sh_out(["bash", "-lc",
+                        f"curl -L -C - -m 900 -s -o {z} '{url}' || true"], timeout=960)
+                sz = os.path.getsize(z) if os.path.exists(z) else 0
+                print(f"[ga] download try{t} size={sz}", flush=True)
+                if sh_out(["bash", "-lc", f"unzip -t {z} >/dev/null 2>&1 && echo OK"]).strip() == "OK":
+                    sh_out(["bash", "-lc",
+                            f"rm -rf {ga_dir}; mkdir -p {ga_dir}; unzip -q -o {z} -d /tmp/gax; "
+                            f"cp -a /tmp/gax/x86_64/. {ga_dir}/; ls {ga_dir} | head -20"], timeout=600)
+                    break
+                time.sleep(3)
+            if complete():
+                break
     if not complete():
         print("[ga] 镜像缺失/不完整, 放弃:", sorted(os.listdir(ga_dir))[:12]
               if os.path.isdir(ga_dir) else "missing", flush=True)
