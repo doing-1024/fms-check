@@ -781,9 +781,9 @@ def flow_full():
         save_reward_log(6)
         save_proxy()
         if not grabbed:
-            mk = adb("shell", "logcat -d -b all | grep -a -c -e 'Integrity: Token' "
-                              "-e 'Token obtained' -e 'requestIntegrityToken() finished'",
-                     timeout=90).strip()
+            mk = adb("shell", "logcat -d -b all | grep -a -e 'Integrity: Token: ' "
+                              "-e 'requestIntegrityToken() finished' | grep -a -v -e "
+                              "'not obtained' | wc -l", timeout=90).strip()
             if mk and mk.isdigit() and int(mk) > 0:
                 print(f"[tok] 进入 token 阶段 (matches={mk}), 抓内存", flush=True)
                 grabbed = harvest_token()
@@ -1208,6 +1208,15 @@ def extract_vending_from_playstore_image():
                         f"ls /tmp/vperm", ], timeout=180)
                 got = os.listdir("/tmp/vperm") if os.path.isdir("/tmp/vperm") else []
                 print("[vending] perms xml:", got[:12], flush=True)
+                # GMS (Play services) 也需要较新版本, Integrity API 才可用
+                gmslst = sh_out(["sudo", "bash", "-lc",
+                                 f"find {mnt} -iname 'GmsCore.apk' -o -iname 'gmscore*.apk' "
+                                 f"2>/dev/null | head -5"]).split()
+                print("[vending] gms candidates:", gmslst[:5], flush=True)
+                if gmslst:
+                    sh_out(["sudo", "cp", gmslst[0], "/tmp/GmsCore.apk"])
+                    sh_out(["sudo", "chmod", "644", "/tmp/GmsCore.apk"])
+                    print("[vending] gms size:", os.path.getsize("/tmp/GmsCore.apk"), flush=True)
                 sh_out(["sudo", "umount", "-f", mnt])
                 return "/tmp/Vending.apk"
             sh_out(["sudo", "umount", "-f", mnt])
@@ -1297,6 +1306,14 @@ def playstore_prepare():
     adb("shell", "monkey -p com.android.vending -c android.intent.category.LAUNCHER 1",
         timeout=120)
     time.sleep(12)
+    print("[ps] gms ver:", adb("shell", "dumpsys package com.google.android.gms | "
+                                       "grep -m1 versionName", timeout=120).strip()[:80], flush=True)
+    if os.path.exists("/tmp/GmsCore.apk"):
+        print("[ps] gms install:", adb("install", "-r", "-g", "-d", "/tmp/GmsCore.apk",
+                                       timeout=900).strip()[-200:], flush=True)
+        print("[ps] gms ver after:", adb("shell", "dumpsys package com.google.android.gms | "
+                                                "grep -m1 versionName", timeout=120).strip()[:80],
+              flush=True)
     alive = app_pid_of("com.android.vending")
     print("[ps] vending alive:", alive, flush=True)
     if not alive:
