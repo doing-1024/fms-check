@@ -1103,59 +1103,57 @@ def extract_vending_from_playstore_image():
     return ""
 
 
+def wait_boot(tag, rounds=36):
+    for _ in range(rounds):
+        time.sleep(5)
+        if adb("shell", "getprop", "sys.boot_completed", timeout=30).strip() == "1":
+            print(f"[boot] {tag} ok", flush=True)
+            return True
+    print(f"[boot] {tag} FAILED", flush=True)
+    return False
+
+
+def root_and_remount(tag):
+    print(f"[root] {tag} adb root:", adb("root", timeout=60).strip()[:60], flush=True)
+    for _ in range(8):
+        time.sleep(3)
+        if adb_root_ok():
+            break
+    print(f"[root] {tag} remount:", adb("remount", timeout=300).strip().replace(
+        "\n", " | ")[:200], flush=True)
+
+
+def playstore_prepare():
+    """google_apis 镜像没 Play Store: 抽 Phonesky.apk -> 去掉 LicenseChecker 占位 -> 装成用户应用。"""
+    v = "Phonesky.apk" if os.path.exists("Phonesky.apk") else extract_vending_from_playstore_image()
+    if not v or not os.path.exists(v):
+        print("[ps] 没拿到 Play Store apk", flush=True)
+        return False
+    print("[ps] apk:", v, os.path.getsize(v), flush=True)
+    print("[ps] disable-verity:", adb("disable-verity", timeout=180).strip()[:120], flush=True)
+    adb("reboot", timeout=60)
+    if not wait_boot("reboot1"):
+        return False
+    root_and_remount("reboot1")
+    adb("shell", "rm -rf /product/app/LicenseChecker /system/app/LicenseChecker", timeout=120)
+    adb("shell", "kill -9 $(pidof system_server)", timeout=60)
+    wait_boot("fwrestart")
+    print("[ps] stub:", adb("shell", "ls /product/app/LicenseChecker 2>&1 | head -1; "
+                                   "pm path com.android.vending 2>&1 | head -1", timeout=90
+                            ).replace("\n", " | ")[:180], flush=True)
+    adb("shell", "settings put global verifier_verify_adb_installs 0; "
+                 "settings put global package_verifier_enable 0", timeout=60)
+    print("[ps] install:", adb("install", "-r", "-g", "-d", v, timeout=900).strip()[:300], flush=True)
+    print("[ps] pm path:", adb("shell", "pm path com.android.vending", timeout=60).strip()[:200],
+          flush=True)
+    return "com.android.vending" in adb("shell", "pm path com.android.vending", timeout=60)
+
+
 def vend_mode():
-    """只做: 从 playstore 镜像抽 Vending.apk 并装成系统应用（独立小实验）。"""
     if not boot_ga():
         print("[vend] 模拟器没起来, 终止", flush=True)
         return False
-    v = extract_vending_from_playstore_image()
-    print("[vend] vending apk:", v, flush=True)
-    if not v:
-        return False
-    def wait_boot(tag, rounds=30):
-        for _ in range(rounds):
-            time.sleep(5)
-            if adb("shell", "getprop", "sys.boot_completed", timeout=30).strip() == "1":
-                print(f"[vend] {tag} boot ok", flush=True)
-                return True
-        print(f"[vend] {tag} boot FAILED", flush=True)
-        return False
-
-    def root_and_remount(tag):
-        adb("root", timeout=60)
-        for _ in range(8):
-            time.sleep(3)
-            if adb_root_ok():
-                break
-        print(f"[vend] {tag} remount:", adb("remount", timeout=300).strip().replace(
-            "\n", " | ")[:200], flush=True)
-
-    print("[vend] disable-verity:", adb("disable-verity", timeout=180).strip()[:120], flush=True)
-    adb("reboot", timeout=60)
-    wait_boot("reboot1")
-    root_and_remount("reboot1")
-    adb("shell", "rm -rf /product/app/LicenseChecker /system/app/LicenseChecker", timeout=120)
-    print("[vend] use shell-kill trick to force PMS rescan (不重启内核, 保住可写 overlay)", flush=True)
-    adb("shell", "kill -9 $(pidof system_server)", timeout=60)
-    if not wait_boot("fwrestart", rounds=36):
-        adb("reboot", timeout=60)
-        wait_boot("reboot2")
-        root_and_remount("reboot2")
-        adb("shell", "rm -rf /product/app/LicenseChecker /system/app/LicenseChecker", timeout=120)
-    print("[vend] stub after restart:", adb(
-        "shell", "ls /product/app/LicenseChecker 2>&1 | head -1; "
-                 "pm path com.android.vending 2>&1 | head -2", timeout=90).replace(
-        "\n", " | ")[:200], flush=True)
-    print("[vend] verifier off:", adb("shell", "settings put global verifier_verify_adb_installs 0; "
-                                       "settings put global package_verifier_enable 0",
-                                     timeout=60).strip()[:80], flush=True)
-    print("[vend] install:", adb("install", "-r", "-g", "-d", v, timeout=900).strip()[:500],
-          flush=True)
-    print("[vend] pm path:", adb("shell", "pm path com.android.vending", timeout=60).strip()[:150],
-          flush=True)
-    print("[vend] pkgs:", adb("shell", "pm list packages | grep -i -e vending -e gms",
-                              timeout=60).strip()[:300], flush=True)
-    return True
+    return playstore_prepare()
 
 
 def boot_ga(_retry=0):
@@ -1255,6 +1253,10 @@ def push_pristine_libs():
 
 
 def seed_dir():
+    """优先用仓库里预置的 seed（省掉 hybrid 包注入环节）。"""
+    here = os.path.join(os.path.dirname(os.path.abspath(__file__)), "mmkv_seed")
+    if os.path.isdir(here) and os.listdir(here):
+        return here
     return os.path.join(OUT, "mmkv_seed")
 
 
@@ -1306,51 +1308,26 @@ def plant_mmkv_seed():
 
 
 def ga_flow():
-    """目标：原签名 APK + 从 debuggable 包移植来的 MMKV(deviceId) + Play Store 签 token。"""
+    """原签名 APK + 预置 MMKV seed(deviceId) + 侧载 Play Store -> 走完整领奖流程。"""
     if not boot_ga():
+        print("[ga] boot 失败", flush=True)
         return False
-    # ---- 1) hybrid 包: JDI 注入 deviceId, 然后 harvest MMKV ----
-    install_hybrid()
-    adb("shell", "monkey", "-p", PKG, "-c", "android.intent.category.LAUNCHER", "1")
-    for i in range(8):
-        time.sleep(3)
-        if app_pid():
-            break
-    print("[hybrid] pid:", app_pid() or "dead", flush=True)
-    ok = False
-    for round_ in range(2):
-        pids = (app_pid() or "").split()
-        print(f"[hybrid] inject round {round_} pids={pids}", flush=True)
-        if not pids:
-            relaunch()
-            continue
-        ok = inject_device_id(adb, pids) if inject_device_id else False
-        print("[hybrid] inject:", "OK" if ok else "FAILED", flush=True)
-        if ok:
-            break
-        relaunch()
-    if ok:
-        relaunch()
-        time.sleep(4)
-        print("[hybrid] deviceId 回读:", adb(
-            "shell", "logcat -d -b all | grep -m2 -a -e 'Device ID already' -e "
-                     "'Generated new device ID'", timeout=120).strip()[:300], flush=True)
-        harvest_mmkv_seed()
-    # ---- 2) 原签名包 + 移植 MMKV + 手工补 .so ----
+    ps = playstore_prepare()
+    print("[ga] playstore ready:", ps, flush=True)
     install_pristine()
     push_pristine_libs()
-    adb("shell", "am", "start", "-W", "-n", PKG + "/.MainActivity", timeout=180)
-    for i in range(6):
+    adb("shell", "am start -W -n " + PKG + "/.MainActivity", timeout=180)
+    for _ in range(6):
         time.sleep(3)
         if app_pid():
             break
     print("[ga] pristine pid (first launch):", app_pid() or "dead", flush=True)
-    adb("shell", "am", "force-stop", PKG, timeout=60)
+    adb("shell", "am force-stop " + PKG, timeout=60)
     time.sleep(2)
     plant_mmkv_seed()
     adb("logcat", "-c", timeout=60)
-    adb("shell", "monkey", "-p", PKG, "-c", "android.intent.category.LAUNCHER", "1")
-    for i in range(8):
+    adb("shell", "monkey -p " + PKG + " -c android.intent.category.LAUNCHER 1", timeout=90)
+    for _ in range(8):
         time.sleep(3)
         if app_pid():
             break
@@ -1358,44 +1335,10 @@ def ga_flow():
     print("[ga] deviceId 日志:", adb(
         "shell", "logcat -d -b all | grep -m3 -a -e 'Device ID already' -e "
                  "'Generated new device ID' -e 'Device registration response'", timeout=120
-    ).strip()[:600], flush=True)
+    ).strip()[:700], flush=True)
     if not app_pid():
         save_logcat("ga_seeded")
         return False
-    # ---- 3) Play Store (integrity token 需要) ----
-    v = extract_vending_from_playstore_image()
-    if v:
-        print("[ga] disable-verity:", adb("disable-verity", timeout=180).strip()[:120], flush=True)
-        adb("reboot", timeout=60)
-        time.sleep(15)
-        for _ in range(24):
-            time.sleep(5)
-            if adb("shell", "getprop", "sys.boot_completed", timeout=30).strip() == "1":
-                break
-        print("[ga] root:", adb("root", timeout=40).strip()[:60], flush=True)
-        time.sleep(5)
-        print("[ga] remount:", adb("remount", timeout=300).strip().replace("\n", " | ")[:400],
-              flush=True)
-        adb("shell", "mkdir -p /system/priv-app/Vending", timeout=60)
-        print("[ga] push Vending:", adb("push", v, "/system/priv-app/Vending/Vending.apk",
-                                        timeout=600)[:150], flush=True)
-        adb("shell", "chmod 644 /system/priv-app/Vending/Vending.apk; "
-                     "restorecon -R /system/priv-app/Vending", timeout=120)
-        adb("reboot", timeout=60)
-        time.sleep(20)
-        for _ in range(24):
-            time.sleep(5)
-            if adb("shell", "getprop", "sys.boot_completed", timeout=30).strip() == "1":
-                break
-        print("[ga] vending:", adb("shell", "pm path com.android.vending",
-                                   timeout=60).strip()[:150], flush=True)
-        print("[ga] gms:", adb("shell", "pm list packages | grep -i -e gms -e vending",
-                               timeout=60).strip()[:300], flush=True)
-        plant_mmkv_seed()
-    else:
-        print("[ga] 无 Play Store, 仅验证 deviceId 移植", flush=True)
-    relaunch()
-    time.sleep(5)
     flow_full()
     return True
 
