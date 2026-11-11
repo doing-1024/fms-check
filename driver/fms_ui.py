@@ -5,6 +5,7 @@
   recon - 装包、启动、周期性 dump UI + logcat，供离线分析
   full  - 完整流程: 登录 -> Free Credits -> claim -> 看广告 -> 领取
 """
+import json
 import os
 import shutil
 import re
@@ -588,6 +589,43 @@ def save_reward_log(n=12):
         print("[js]", ln[:190])
 
 
+def harvest_token(max_segs=14, cap=120 * 1024 * 1024):
+    """root 下从 App 进程内存里捞 Play Integrity token (JWS 以 eyJ 开头)。"""
+    pid = app_pid()
+    print("[tok] pid:", pid, flush=True)
+    if not pid:
+        return ""
+    adb("shell", "setenforce 0", timeout=40)
+    maps = adb("shell", f"cat /proc/{pid}/maps", timeout=90)
+    segs = []
+    for line in maps.splitlines():
+        p = line.split()
+        if len(p) < 6 or "rw-p" not in p[1]:
+            continue
+        try:
+            a, b = p[0].split("-")
+            start, end = int(a, 16), int(b, 16)
+        except Exception:
+            continue
+        size = end - start
+        if size < 65536 or size > cap:
+            continue
+        segs.append((size, start, p[5]))
+    segs.sort(reverse=True)
+    print(f"[tok] rw 段 {len(segs)}, 最多扫 {min(max_segs, len(segs))}", flush=True)
+    pat = re.compile(r"^eyJ[A-Za-z0-9_\-\.=]{150,}$")
+    for size, start, name in segs[:max_segs]:
+        out = adb("shell",
+                  f"dd if=/proc/{pid}/mem bs=4096 skip={start // 4096} count={size // 4096} "
+                  f"2>/dev/null | strings -n 150 | grep -a -m3 'eyJ'", timeout=240)
+        for line in out.splitlines():
+            if pat.match(line.strip()):
+                print(f"[tok] 命中 {name} {size // 1024}KB len={len(line.strip())}", flush=True)
+                return line.strip()
+        print(f"[tok] miss {name} {size // 1024}KB", flush=True)
+    return ""
+
+
 def flow_full():
     ns = wait_app()
     net_forensics("pre_login")
@@ -691,6 +729,7 @@ def flow_full():
         print("[flow] 未找到 Watch Ad & Earn 按钮")
 
     seen = set()
+    grabbed = ""
     for i in range(24):
         time.sleep(7)
         tag = f"rw_{i:02d}"
@@ -698,6 +737,22 @@ def flow_full():
         shot(tag)
         save_reward_log(6)
         save_proxy()
+        if not grabbed:
+            mk = adb("shell", "logcat -d -b all | grep -a -c -e 'Integrity: Token' "
+                              "-e 'Token obtained' -e 'requestIntegrityToken() finished'",
+                     timeout=90).strip()
+            if mk and mk.isdigit() and int(mk) > 0:
+                print(f"[tok] 进入 token 阶段 (matches={mk}), 抓内存", flush=True)
+                grabbed = harvest_token()
+                info = adb("shell", "logcat -d -b all | grep -a -e 'Authorization ID' "
+                                    "-e 'Nonce:' | tail -6", timeout=120)
+                try:
+                    os.makedirs(OUT, exist_ok=True)
+                    with open(os.path.join(OUT, "token.json"), "w") as f:
+                        json.dump({"log": info[-2000:], "token": grabbed}, f)
+                except Exception as e:
+                    print("[tok] 写 token.json 失败", e, flush=True)
+                print(f"[tok] token 长度: {len(grabbed)}", flush=True)
         ns = nodes(tag)
         tsz = " | ".join([x["text"] for x in ns if x["text"]])[:120]
         print(f"[rw {i}] {tsz}")
